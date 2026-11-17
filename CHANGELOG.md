@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.7.1 (2026-11-17)
+
+- "Desk mode" renamed to "Temperature override" (page, docs, log); commands `temp-override on|off`
+  and `temp-limit`, the old `desk-mode` / `desk-limit` still work.
+
 ## v2.7.0 (2026-11-17)
 
 - Experimental desk mode (`desk-mode on|off`): while a monitor is connected, Samsung's skin-based

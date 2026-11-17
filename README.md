@@ -24,9 +24,9 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   **the phone screen's refresh rate and frames per second**, **temperatures and how far heat holds
   the GPU and CPU back**, DisplayPort link, bandwidth use and pixel clock. It only measures while it
   is open and visible.
-- **Experimental desk mode** (switch): for a phone lying untouched next to a monitor. Samsung slows
+- **Experimental temperature override** (switch): for a phone lying untouched next to a monitor. Samsung slows
   the GPU and CPU from an estimated skin temperature of about 43-45 °C, a limit meant for a phone in
-  the hand. Desk mode keeps them at full speed while a monitor is connected, with your own, higher
+  the hand. The override keeps them at full speed while a monitor is connected, with your own, higher
   limits: battery 41/45/50 °C, board near the chip 80/90/100 °C, skin estimate 56/65 °C or ignored.
   Above a limit Samsung's limits come back until it has cooled down; the kernel's own chip
   protection always stays active.
@@ -74,7 +74,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.7.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.7.1.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -122,8 +122,8 @@ su -c "sh $M extra on"               # experimental extra refresh rates for this
 su -c "sh $M dsc on"                 # experimental compression (DSC) for this monitor (or: off)
 su -c "sh $M dsc auto-on"            # check new monitors for DSC when they connect (or: auto-off)
 su -c "sh $M thermal-fallback on"    # 60 Hz while the phone is hot (or: off)
-su -c "sh $M desk-mode on"           # experimental desk mode (or: off)
-su -c "sh $M desk-limit bat 45"      # desk mode limits: bat 41|45|50, ap 80|90|100, skin 56|65|off
+su -c "sh $M temp-override on"       # experimental temperature override (or: off)
+su -c "sh $M temp-limit bat 45"      # override limits: bat 41|45|50, ap 80|90|100, skin 56|65|off
 su -c "sh $M confirm"                # keep a new experimental mode (confirm back: undo now)
 ```
 

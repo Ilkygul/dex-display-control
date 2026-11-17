@@ -93,8 +93,8 @@
   <div class="sep"></div>
   <div class="row">
     <div>
-      <div>Desk mode: let the phone run hotter (experimental)</div>
-      <div class="hint">For a phone lying untouched next to a monitor. Samsung slows the GPU and CPU from about 43-45 °C estimated skin temperature, a limit meant for a phone in your hand. Desk mode keeps them at full speed while a monitor is connected, until one of the limits below is reached; then Samsung's limits come back until it has cooled down a few degrees. The chip's own protection in the kernel always stays active, whatever you choose here.</div>
+      <div>Temperature override: let the phone run hotter (experimental)</div>
+      <div class="hint">For a phone lying untouched next to a monitor. Samsung slows the GPU and CPU from about 43-45 °C estimated skin temperature, a limit meant for a phone in your hand. The override keeps them at full speed while a monitor is connected, until one of the limits below is reached; then Samsung's limits come back until it has cooled down a few degrees. The chip's own protection in the kernel always stays active, whatever you choose here.</div>
     </div>
     <label class="switch"><input type="checkbox" id="deskSw"><span class="slider"></span></label>
   </div>
@@ -301,7 +301,7 @@
       const c = document.createElement("button");
       c.className = "chip" + ((cur || def) === val ? " active" : "");
       c.textContent = label; c.disabled = busy;
-      c.onclick = async () => { busy = true; await run("sh " + SCRIPT + " desk-limit " + key + " " + val); busy = false; refresh(); };
+      c.onclick = async () => { busy = true; await run("sh " + SCRIPT + " temp-limit " + key + " " + val); busy = false; refresh(); };
       b.appendChild(c);
     }
   }
@@ -557,9 +557,9 @@
 
   el("deskSw").onchange = async (e) => {
     busy = true;
-    await run("sh " + SCRIPT + " desk-mode " + (e.target.checked ? "on" : "off"));
+    await run("sh " + SCRIPT + " temp-override " + (e.target.checked ? "on" : "off"));
     busy = false;
-    setMsg("msg", e.target.checked ? "Desk mode on: full speed while a monitor is connected, with Samsung's limits back above the safety temperatures." : "Desk mode off: Samsung's limits apply again.", "ok");
+    setMsg("msg", e.target.checked ? "Temperature override on: full speed while a monitor is connected, with Samsung's limits back above your limits." : "Temperature override off: Samsung's limits apply again.", "ok");
     refresh();
   };
 

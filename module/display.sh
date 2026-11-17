@@ -1137,7 +1137,7 @@ thermal_guard() {
     st=${st:-0}
     if [ ! -f "$THL" ]; then
         dk=""; [ -f "$BASE/desk.state" ] && read -r dk _ < "$BASE/desk.state"
-        # In desk mode at full speed the GPU is not held back, so the status alone does not count.
+        # With the temperature override at full speed the GPU is not held back, so the status alone does not count.
         if [ "$pl" -ge 6 ] || { [ "$st" -ge 4 ] && [ "$dk" != on ]; }; then hot_n=$((hot_n + 1)); else hot_n=0; fi
         [ "$hot_n" -ge 2 ] || return
         act=$(active_mode); act=${act:+$(to_key "$act")}
@@ -1169,13 +1169,13 @@ thermal_cmd() {
     esac
 }
 
-# ---- Experimental desk mode: run hotter while the phone sits untouched next to a monitor ---------
+# ---- Experimental temperature override: run hotter while the phone sits untouched next to a monitor
 # Samsung's thermal service limits the GPU (kgsl thermal_pwrlevel) and the CPU (cpufreq
 # scaling_max_freq, adjusted every 2-4 s) from an estimated skin temperature (~43-45 C), which is
-# meant for a phone in the hand. With desk mode on and a monitor connected, a small loop puts those
+# meant for a phone in the hand. With the temperature override on and a monitor connected, a small loop puts those
 # limits back to full speed once a second, and remembers what Samsung asked for. Limits that protect
 # parts take over again: Samsung's own values come back at once when the battery reaches 41 C, the
-# board near the chip 80 C, the skin estimate 56 C, or any sensor is at "emergency"; desk mode
+# board near the chip 80 C, the skin estimate 56 C, or any sensor is at "emergency"; the override
 # resumes below 38 / 72 / 52 C. The kernel's own chip protection (thermal zones, cooling devices) is
 # separate and never touched. Costs a few sysfs reads per second and one thermal reading per 5 s,
 # only while it runs.
@@ -1212,7 +1212,7 @@ desk_run() {
     for i in $POLS; do read -r v < /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; eval "w_$i=$v"; done
     mode=on; t=0; n_over=0
     echo "on full speed" > "$BASE/desk.state"
-    log "desk mode on (Samsung's limits overridden; back at battery $DESK_BAT C, board $DESK_AP C, skin $DESK_SKIN C)"
+    log "temperature override on (Samsung's limits overridden; back at battery $DESK_BAT C, board $DESK_AP C, skin $DESK_SKIN C)"
     while [ -f "$BASE/desk.run" ]; do
         if [ $((t % 5)) = 0 ]; then
             # Limits can be tuned in the settings file (desk_bat, desk_ap, desk_skin); the "cool
@@ -1232,12 +1232,12 @@ desk_run() {
                     echo "$w_g" > $G
                     for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
                     echo "back $why" > "$BASE/desk.state"
-                    log "desk mode: $why; Samsung's limits back"
+                    log "temperature override: $why; Samsung's limits back"
                 fi
             elif [ "$d_bat" -lt "$DESK_BAT_OK" ] && [ "$d_ap" -lt "$DESK_AP_OK" ] && [ "$d_skin" -lt "$DESK_SKIN_OK" ] && [ "$d_st" -lt 5 ]; then
                 mode=on
                 echo "on full speed" > "$BASE/desk.state"
-                log "desk mode: cool again (battery $d_bat C, board $d_ap C, skin $d_skin C); full speed"
+                log "temperature override: cool again (battery $d_bat C, board $d_ap C, skin $d_skin C); full speed"
             fi
         fi
         if [ "$mode" = on ]; then
@@ -1258,7 +1258,7 @@ desk_run() {
     echo "$w_g" > $G
     for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
     rm -f "$BASE/desk.state" "$pidf"
-    log "desk mode off ($n_over limits put back to full speed)"
+    log "temperature override off ($n_over limits put back to full speed)"
 }
 
 desk_start() {
@@ -1278,17 +1278,17 @@ desk_limit_cmd() {
     case "$1:$2" in
         bat:41|bat:45|bat:50|ap:80|ap:90|ap:100|skin:56|skin:65) put_set "desk_$1" "$2" ;;
         skin:off) put_set desk_skin 999 ;;
-        *) echo "error=use: desk-limit bat 41|45|50 | ap 80|90|100 | skin 56|65|off"; return 1 ;;
+        *) echo "error=use: temp-limit bat 41|45|50 | ap 80|90|100 | skin 56|65|off"; return 1 ;;
     esac
-    log "desk mode limit $1 -> $2"
+    log "temperature override limit $1 -> $2"
     echo "ok=1"
 }
 
 desk_cmd() {
     case "$1" in
-        on) put_set desk_mode 1; log "switch: desk mode ON"; desk_start; echo "ok=1" ;;
-        off) put_set desk_mode 0; log "switch: desk mode OFF"; desk_stop; echo "ok=1" ;;
-        *) echo "error=use: desk-mode on|off" ;;
+        on) put_set desk_mode 1; log "switch: temperature override ON"; desk_start; echo "ok=1" ;;
+        off) put_set desk_mode 0; log "switch: temperature override OFF"; desk_stop; echo "ok=1" ;;
+        *) echo "error=use: temp-override on|off" ;;
     esac
 }
 
@@ -1414,8 +1414,8 @@ case "$1" in
     confirm) if [ "$2" = back ]; then lock; confirm_cmd back; unlock; else confirm_cmd; fi ;;
     revert-timer) revert_timer ;;
     thermal-fallback) thermal_cmd "$2" ;;
-    desk-mode) desk_cmd "$2" ;;
-    desk-limit) desk_limit_cmd "$2" "$3" ;;
+    temp-override|desk-mode) desk_cmd "$2" ;;
+    temp-limit|desk-limit) desk_limit_cmd "$2" "$3" ;;
     desk-run) desk_run ;;
     dsc) case "$2" in auto-*) dsc_cmd "$2" ;; *) lock; dsc_cmd "$2"; unlock ;; esac ;;
     reset) lock; reset_mode; unlock ;;
@@ -1434,5 +1434,5 @@ case "$1" in
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | desk-mode on|off | desk-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | temp-override on|off | temp-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
 esac
