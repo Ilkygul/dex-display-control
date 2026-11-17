@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.9.1 (2026-11-17)
+
+- Live panel: fixed explanations removed and labels shortened; only values that change.
+
 ## v2.9.0 (2026-11-17)
 
 - Live panel (right on wide screens, on top on narrow ones): fps and power with 60-second graphs,

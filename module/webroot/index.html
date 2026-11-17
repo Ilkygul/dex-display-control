@@ -430,7 +430,7 @@
   // Live panel: the numbers that change, in one place (right on wide screens, on top on narrow ones).
   function renderLive(s) {
     const t = parseFloat(s.t);
-    const sec = (title, body, hint) => body ? '<div class="lsec"><div class="ltitle">' + title + "</div>" + body + (hint ? '<div class="lhint">(' + hint + ")</div>" : "") + "</div>" : "";
+    const sec = (title, body) => body ? '<div class="lsec"><div class="ltitle">' + title + "</div>" + body + "</div>" : "";
     const row = (k, v) => '<div class="lrow"><span class="k">' + k + "</span><span>" + v + "</span></div>";
     const ghz = (k) => nf(k / 1e6, 2);
     let h = "";
@@ -442,54 +442,51 @@
       if (fps !== null) b += gauge(fps / hz * 100, fcls) + spark("fps", 0, hz, fcls === "idle" ? "accent" : fcls);
       b += row("Resolution", pretty(resOf(s.current)));
       if (s.kern && s.kern.bpp) b += row("Colour", s.kern.bpp / 3 + "-bit" + (s.dsc_active === "1" ? " · DSC" : ""));
-      h += sec("Monitor", b, "fps = frames per second actually sent to the monitor; it drops when nothing on screen moves (grey), green = keeping up with the refresh rate, orange/red = apps cannot keep up; graph = last 60 s");
-    } else h += sec("Monitor", row("Monitor", "not connected"), "connect a monitor over USB-C");
+      h += sec("Monitor", b);
+    } else h += sec("Monitor", row("Monitor", "not connected"));
     // Phone screen
     if (s.phone === "on") {
       const ir = s.inner_rate ? Math.round(parseFloat(s.inner_rate)) : 0;
-      h += sec("Phone screen", row("Now", ir + " Hz" + (innerFps !== null ? " · " + nf(innerFps, 0) + " fps" : "")) + (innerFps !== null && ir ? gauge(innerFps / ir * 100, innerFps < 5 ? "idle" : "acc") : ""),
-        (s.inner_hz ? "set to " + s.inner_hz + " Hz while a monitor is connected" : "your normal refresh setting") + "; the phone screen costs extra power and heat while DeX runs");
-    } else h += sec("Phone screen", row("Now", colored("off", "good")), s.phone_guard === "1" ? "kept off while a monitor is connected" : "saves power and heat");
+      h += sec("Phone screen", row("Now", ir + " Hz" + (innerFps !== null ? " · " + nf(innerFps, 0) + " fps" : "")) + (innerFps !== null && ir ? gauge(innerFps / ir * 100, innerFps < 5 ? "idle" : "acc") : ""));
+    } else h += sec("Phone screen", row("Now", colored("off", "good")));
     // Power with graph
     if (pw.length) {
       const now = pw[pw.length - 1].w, avg = pw.reduce((a, x) => a + x.w, 0) / pw.length, pc = lvl(now, 4, 7);
       remember("power", t, now);
-      h += sec("Power (whole phone)", '<div class="lbig">' + colored(nf(now, 2) + " W", pc) + ' <span class="res">avg ' + nf(avg, 2) + " W</span></div>" + spark("power", 0, 4, pc),
-        "fuel gauge system current × voltage, " + (s.batt_status === "Discharging" ? "on battery" : "on external power (" + (s.batt_status || "").toLowerCase() + ")") + "; green under 4 W, orange 4-7 W, red above; graph = last 60 s");
+      h += sec("Power · " + (s.batt_status === "Discharging" ? "battery" : "external"), '<div class="lbig">' + colored(nf(now, 2) + " W", pc) + ' <span class="res">avg ' + nf(avg, 2) + " W</span></div>" + spark("power", 0, 4, pc));
     }
     // Temperatures: bar per sensor, marker at the override limit
     const T = s.temps, st = parseInt(s.th_status, 10);
     let tb = "";
-    if (!isNaN(st)) tb += row("Android status", pill(TH_WORDS[st], st >= 4 ? "bad" : st >= 2 ? "mid" : "good"));
-    for (const [n, label] of [["SKIN", "Skin (estimate)"], ["AP", "Chip area"], ["BAT", "Battery"]]) {
+    if (!isNaN(st)) tb += row("Status", pill(TH_WORDS[st], st >= 4 ? "bad" : st >= 2 ? "mid" : "good"));
+    for (const [n, label] of [["SKIN", "Skin"], ["AP", "Chip"], ["BAT", "Battery"]]) {
       if (!T[n]) continue;
       const L = tempLevel(n, T[n].v, s); remember("t" + n, t, T[n].v);
       tb += row(label, colored(nf(T[n].v, 1) + " °C", L.cls)) + gauge((T[n].v - L.lo) / (L.hi - L.lo) * 100, L.cls, L.mark !== null ? (L.mark - L.lo) / (L.hi - L.lo) * 100 : null);
     }
-    h += sec("Temperature", tb, "skin = Samsung's estimate, matters when you hold the phone; chip area = sensor next to the processor; battery = ages faster above about 45 °C" + (s.desk_mode === "1" ? "; marker = your temperature override limit" : "") + "; green = fine, orange = warm, red = at or near a limit");
+    h += sec("Temperature", tb);
     // GPU: clock with a marker at what is allowed, load
     const gt = parseFloat(s.gpu_top), gn = parseFloat(s.gpu_now), gk = parseFloat(s.gpu_max), gs = parseFloat(s.gpu_smax);
     if (gt) {
       const lim = Math.min(gk || gt, gs ? gs * 1e6 : gt), held = lim < gt * 0.97, busy = parseFloat(s.gpu_busy);
-      let g = row("Clock", Math.round(gn / 1e6) + " MHz" + ' <span class="label">/ ' + (held ? colored(Math.round(lim / 1e6) + " MHz allowed", "bad") : Math.round(gt / 1e6) + " MHz") + "</span>");
+      let g = row("Clock", Math.round(gn / 1e6) + " MHz" + ' <span class="label">/ ' + (held ? colored(Math.round(lim / 1e6) + " max", "bad") : Math.round(gt / 1e6) + " MHz") + "</span>");
       g += gauge(gn / gt * 100, held ? "mid" : "acc", lim / gt * 100, held);
       if (!isNaN(busy)) { const bc = lvl(busy, 70, 92); g += row("Load", colored(nf(busy, 0) + " %", bc)) + gauge(busy, bc); }
-      h += sec("GPU", g, "clock = speed right now, it goes up and down with the work; marker = the maximum allowed now (red when heat protection holds it back); load = how busy the GPU is");
+      h += sec("GPU", g);
     }
     // CPU per core group: current clock, marker at the allowed maximum
     const groups = Object.keys(s).filter((k) => k.startsWith("cpu_policy")).map((k) => { const p = s[k].split(":").map(Number); return { cur: p[0], max: p[1], top: p[2] }; }).sort((a, b) => b.top - a.top);
     let cb2 = "";
     groups.forEach((g, i) => {
       const held = g.max < g.top * 0.97;
-      cb2 += row(i === 0 ? "Fast cores" : "Other cores", ghz(g.cur) + " GHz" + ' <span class="label">/ ' + (held ? colored(ghz(g.max) + " allowed", "bad") : ghz(g.top)) + "</span>");
+      cb2 += row(i === 0 ? "Fast cores" : "Other cores", ghz(g.cur) + " GHz" + ' <span class="label">/ ' + (held ? colored(ghz(g.max) + " max", "bad") : ghz(g.top)) + "</span>");
       cb2 += gauge(g.cur / g.top * 100, held ? "mid" : "acc", g.max / g.top * 100, held);
     });
-    h += sec("CPU", cb2, "speed right now / maximum allowed; fast cores do the heavy work; a red marker means heat protection holds them back");
+    h += sec("CPU", cb2);
     // Heat control
     const d = s.desk_state || "";
-    h += sec("Heat control", row("Temperature override", s.desk_mode !== "1" ? pill("off · Samsung", "idle") : d.startsWith("on") ? pill("full speed", "good") : d.startsWith("back") ? pill("Samsung: " + d.slice(5), "mid") : pill("waiting for a monitor", "idle"))
-      + (s.thermal_lowered ? row("Monitor", pill("60 Hz while hot", "mid")) : ""),
-      s.desk_mode === "1" ? "full speed = Samsung's heat limits are lifted until one of your limits is reached" : "Samsung's own heat protection decides the limits");
+    h += sec("Heat", row("Override", s.desk_mode !== "1" ? pill("off", "idle") : d.startsWith("on") ? pill("full speed", "good") : d.startsWith("back") ? pill("Samsung · " + d.slice(5), "mid") : pill("no monitor", "idle"))
+      + (s.thermal_lowered ? row("Monitor", pill("60 Hz while hot", "mid")) : ""));
     el("liveBody").className = ""; el("liveBody").innerHTML = h;
     el("liveStamp").textContent = new Date().toLocaleTimeString();
   }
