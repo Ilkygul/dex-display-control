@@ -20,7 +20,8 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   as the apps' frame clock, which DeX limits to 60 Hz: a browser on a 120 Hz monitor still drew
   60 fps. The module hands the clock to the monitor (verified with testufo.com: 60 -> 120 fps).
 - **Live status page** (KernelSU WebUI): monitor name, refresh rate, the rate DeX runs at, measured
-  frames per second, DeX desktop size, DisplayPort link, bandwidth use and pixel clock.
+  frames per second, DeX desktop size, colour depth, **whole-phone power** (live and 30 s average),
+  DisplayPort link, bandwidth use and pixel clock. It only measures while it is open and visible.
 - **Keep phone screen off while a monitor is connected** (switch). Keyboard, notifications and other
   events no longer wake the phone screen; only the side key, unplugging, a restart or an explicit
   command do. The switch is remembered and can always be turned off, also with no monitor attached.
@@ -57,11 +58,12 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
 | Monitors | XREAL One Pro glasses (USB-C); Dell U3225QE 32" 4K 120 Hz (USB-C/Thunderbolt input); LG UltraFine 40U990A 40" 5K2K (Thunderbolt 5 input). All over DisplayPort Alt Mode |
 
 Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was found on the way:
-[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
+[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md). What the modes cost in power and how it was measured:
+[docs/POWER.md](docs/POWER.md).
 
 ## Install
 
-1. Download `dex-display-control-v2.4.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.5.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -111,7 +113,8 @@ su -c "sh $M dsc auto-on"            # check new monitors for DSC when they conn
 su -c "sh $M confirm"                # keep a new experimental mode (confirm back: undo now)
 ```
 
-Termux widget examples: [extras/termux](extras/termux).
+Termux widget examples and a power meter for the shell (`power.sh`, average over N seconds):
+[extras/termux](extras/termux).
 
 ### Escape routes for the phone-screen switch
 
@@ -135,7 +138,8 @@ from a shell turns the switch off; disabling the module in KernelSU Manager stop
     monitor's DSC decoder is. The LG reports 340 Mpixel/s per slice and the phone uses 4 slices at
     5120 wide: 110 Hz (323 per slice) works, the LG's own 120 Hz (355 per slice) leaves it black.
   - Power, whole phone, still DeX screen: 60 Hz 2.03 W, 60 Hz with DSC 2.15 W, 80 Hz 6-bit 2.37 W,
-    110 Hz with DSC 3.04 W. DSC itself costs about 0.1 W; each extra Hz about 17 mW.
+    110 Hz with DSC 3.04 W. DSC itself costs about 0.1 W; each extra Hz about 17 mW. Details:
+    [docs/POWER.md](docs/POWER.md).
   - The device tree's 675 MHz pixel clock is not the real limit: the LG runs at 704 MHz.
 - **Hubs and docks can halve it.** If the link falls back to 2 lanes (seen once with a re-plug through
   a USB hub), only 8.64 Gbit/s is left and the high modes disappear. The status page shows the lanes;

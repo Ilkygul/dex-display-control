@@ -251,6 +251,14 @@ status() {
     echo "t=$up"
     echo "phone_guard=$(get_set phone_guard)"
     echo "inner_hz=$(get_set inner_hz)"
+    # Whole-phone power, only read when someone asks (the page while it is open): the fuel gauge's
+    # system current (ISYS, mA; Samsung reports it as power_now/power_avg) and system voltage (mV).
+    # It covers the whole phone whether it runs on its battery or on the monitor's or a charger's power.
+    PS=/sys/class/power_supply/battery
+    read -r v 2>/dev/null < $PS/power_now && echo "sys_ma=$v"
+    read -r v 2>/dev/null < $PS/power_avg && echo "sys_ma_avg=$v"
+    read -r v 2>/dev/null < $PS/voltage_sys && echo "sys_mv=$v"
+    read -r v 2>/dev/null < $PS/status && echo "batt_status=$v"
     read -r d1 < /sys/class/drm/card0-DSI-1/dpms 2>/dev/null
     read -r d2 < /sys/class/drm/card0-DSI-2/dpms 2>/dev/null
     [ "$d1" = On ] || [ "$d2" = On ] && echo "phone=on" || echo "phone=off"

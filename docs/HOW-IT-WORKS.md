@@ -98,6 +98,12 @@ Qualcomm's DP driver picks the deepest colour that fits the link, starting at th
 
 ## Experimental DSC (Display Stream Compression)
 
+Whether the LG 40U990A supports DSC over DisplayPort was not stated anywhere we found online: the
+spec database lists "2 x HDMI 2.1 (DSC)" and "DisplayPort 2.1 (UHBR20)" without a DSC note, and a
+detailed review (ixbt.com) does not mention DSC. The phone's kernel answered it: with the switches
+on, the connect log showed `DSC version: 1.2(support:1)` for the LG. The module therefore reads
+support from the kernel per monitor instead of relying on spec sheets.
+
 Qualcomm's DP driver supports DSC 1.2 and FEC, but on this phone both are switched off
 (`dsc_feature_enable` and `fec_feature_enable` in `/sys/kernel/debug/drm_dp`, both `N`). Set to 1,
 the next connect reads the monitor's DSC capabilities from its DPCD; the kernel log then shows

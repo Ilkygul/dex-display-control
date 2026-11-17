@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.5.0 (2026-11-17)
+
+- Live whole-phone power on the status page (fuel gauge system current x system voltage), with a
+  30-second average; only read while the page is open and visible. Also shown with no monitor.
+- docs/POWER.md: the measured cost of each mode, how it was measured, and how the live reading works.
+- extras/termux/power.sh: average whole-phone power over N seconds from a shell.
+
 ## v2.4.0 (2026-11-17)
 
 - DSC for any monitor: optional automatic check of monitors not seen before (`dsc auto-on`), with a

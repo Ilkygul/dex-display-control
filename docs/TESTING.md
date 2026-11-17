@@ -59,6 +59,8 @@ Internet on DeX.
 | Reconnect missed by the watcher (while it was busy starting) | LG 40U990A | Found within 30 s by the new consistency check (DSC switches, extra rates, mode override) and applied again |
 | Two actions reconnecting at once (confirmation timer and watcher) | LG 40U990A | Confused each other before the lock; with the lock they run one after the other |
 | Power (whole phone on battery via slate mode, still DeX screen, 50 s average) | LG 40U990A | 60 Hz 2.03 W; 60 Hz DSC 2.15 W; 80 Hz 6-bit 2.37 W; 110 Hz DSC 3.04 W |
+| Live power from the fuel gauge (system current `power_now` x `voltage_sys`, 20 s average) | LG 40U990A | 110 Hz DSC 700 mA x 4.53 V = 3.17 W, 60 Hz DSC 519 mA = 2.35 W, back to 110 Hz 698 mA: follows the change, about 5-10 % above the battery-side result |
+| Status call with the power reading | - | 0.15 s for the whole status call; the reading itself is 4 small sysfs reads, only while the page is visible |
 | Extra rates: remove while at 80 Hz | LG 40U990A | Back to 5120x2160 at 60 Hz, 8-bit, in one reconnect (the LG's preferred timing is 3440x1440, so the module sets the native mode instead of "no override") |
 | Phone screen refresh 30 Hz during DeX | Dell U3225QE | Works: SurfaceFlinger inner render 30 Hz; previous 120/120 restored on "Don't change" |
 | Keep phone screen off: unwanted wake | Dell U3225QE | `cmd power wakeup` while guarded: turned off again within 0.5 s |
