@@ -21,10 +21,13 @@
 # - The phone's own screens are power group 0, the external display its own group, so
 #   `cmd power sleep --display-id 0` darkens only the phone and DeX keeps running without a lock.
 # - Experimental 4K 75 Hz: Qualcomm's DP debugfs takes a replacement EDID (drm_dp/edid, hex text) and
-#   uses it at the next REAL hotplug; writing invalid hex clears it (the handler then passes NULL).
-#   It would apply to any monitor plugged in next, so it is only armed while the monitor it was made
-#   for is connected and cleared on every disconnect. Never write a short valid string: a 0-byte
-#   buffer becomes the custom EDID and the next hotplug would parse it.
+#   uses it at the next REAL hotplug - for whatever monitor that is, and while it is set the kernel
+#   does not read the monitor's own EDID at all. So it is armed only on request, for the monitor
+#   connected at that moment, kept 60 s for a re-plug, and cleared on every other disconnect with
+#   `echo 0 > drm_dp/sim`. Writing invalid hex to drm_dp/edid did NOT clear it on Samsung's kernel
+#   (a Dell's custom EDID was handed to the next monitor, an LG, on 2026-11-17), and a short valid
+#   string makes a 0-byte custom EDID, so neither is used. Every connect checks the EDID it reads
+#   against the custom one and reports a leak instead of trusting the clear.
 # Desired mode on connect: this module's profile for the monitor variant (same monitor, same mode
 # list), else its profile for the monitor, else DeX's own preferred mode, else the EDID default -
 # each only if the monitor offers it right now.
@@ -41,6 +44,15 @@ DBG=/sys/kernel/debug/drm_dp
 mkdir -p "$PROF"
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+# Start "$@" detached in its own session, then wait a moment before returning: the caller (KernelSU's
+# service stage, or the page through ksu.exec) may end its process group as soon as this script
+# exits, and that killed children before setsid had moved them out (found 2026-11-17: the watcher
+# and the phone guard silently did not start).
+spawn() {
+    setsid "$@" </dev/null >/dev/null 2>>"$BASE/watch.err" &
+    sleep 1
+}
 
 connected() { read -r s < $CONN/status 2>/dev/null; [ "$s" = connected ]; }
 
@@ -204,6 +216,7 @@ status() {
     [ -f "$BASE/guard.armed" ] && echo "armed=1" || echo "armed=0"
     [ -f "$BASE/custom.armed" ] && { read -r ca _ < "$BASE/custom.armed"; echo "custom=armed:$ca"; }
     [ -f "$BASE/custom.active" ] && { read -r ca < "$BASE/custom.active"; echo "custom=active:$ca"; }
+    [ -f "$BASE/custom.leak" ] && echo "custom=leak"
     if ! connected; then
         echo "connected=0"
         return 0
@@ -278,7 +291,6 @@ EOF
         read -r v < "$f"
         echo "profile=${f##*/}:$v"
     done
-    echo "exp75=$(get_set "exp75_$(edid_id)")"
     echo "prop=$(getprop $PROP)"
 }
 
@@ -297,7 +309,7 @@ set_mode() {
     echo "$id" > "$BASE/last"
     log "set $id ($var) -> $key"
     apply_mode "$key" "$(ext_sf_id)"
-    nohup setsid sh "$0" pace </dev/null >/dev/null 2>&1 &
+    spawn sh "$0" pace
     echo "ok=1"
 }
 
@@ -307,7 +319,7 @@ reset_mode() {
     rm -f "$PROF/$id-$(variant)" "$PROF/$id"
     log "reset $id to the monitor's own default mode"
     apply_mode "" "$(ext_sf_id)"
-    nohup setsid sh "$0" pace </dev/null >/dev/null 2>&1 &
+    spawn sh "$0" pace
     echo "ok=1"
 }
 
@@ -407,7 +419,7 @@ guard_run() {
 guard_start() {
     [ "$(get_set phone_guard)" = 1 ] && connected || return 0
     touch "$BASE/guard.run"
-    nohup setsid sh "$0" guard-run </dev/null >/dev/null 2>&1 &
+    spawn sh "$0" guard-run
 }
 
 # Stop the guard; $1=wake also turns the phone screen back on if the guard was holding it off.
@@ -437,8 +449,8 @@ guard_cmd() {
 
 # ---- Phone screen refresh rate while a monitor is connected ---------------------------------
 
-# Galaxy Max Hz (com.tribalfs.gmh) pins system min/peak_refresh_rate; the user's values are saved
-# on connect and put back on disconnect, and re-applied if anything changes them meanwhile.
+# Uses system min/peak_refresh_rate. The user's values (also those set by refresh-rate apps) are
+# saved on connect and put back on disconnect; ours are re-applied if something changes them meanwhile.
 inner_apply() {
     hz=$(get_set inner_hz)
     case "$hz" in 120|80|60|48|30|20) ;; *) inner_restore; return 0 ;; esac
@@ -477,35 +489,51 @@ debugfs_up() {
     [ -e "$DBG/edid" ]
 }
 
-# Custom EDID states: custom.armed ("<id> <uptime>") = written, waiting for the re-plug;
-# custom.active ("<id>") = in use by the connected monitor.
-# Clear it: invalid hex makes the kernel handler pass NULL, which turns the custom EDID off.
+# Custom EDID state files: custom.sum = checksum of the custom EDID written this boot (also marks
+# that one was written); custom.armed = "<id> <uptime>", waiting for the re-plug; custom.active =
+# in use by the connected monitor; custom.leak = a connect read the custom EDID without it being
+# armed, i.e. a clear failed.
+# Clear: sim mode off calls set_edid(NULL). It also aborts DP AUX and link activity, so it only runs
+# with nothing connected; a pending clear runs at the next disconnect.
 custom_clear() {
-    [ -f "$BASE/custom.active" ] || [ -f "$BASE/custom.armed" ] || return 0
-    debugfs_up && printf 'zz' > "$DBG/edid" 2>/dev/null
-    rm -f "$BASE/custom.active" "$BASE/custom.armed"
-    log "custom EDID cleared"
+    [ -f "$BASE/custom.sum" ] || return 0
+    if connected; then log "custom EDID clear waits for the disconnect"; return 1; fi
+    debugfs_up || return 1
+    echo 0 > "$DBG/sim" 2>/dev/null
+    rm -f "$BASE/custom.sum" "$BASE/custom.armed" "$BASE/custom.active" "$BASE/custom.leak"
+    log "custom EDID cleared (sim mode off)"
 }
 
-# On disconnect: an EDID in use is always cleared; one just armed survives 60 s, the time to
-# re-plug the same monitor, so no other display can pick it up later.
+# On disconnect: an EDID just armed survives 60 s, the time to re-plug the same monitor; anything
+# else is cleared, so the next monitor is read with its own EDID.
 custom_on_disconnect() {
+    [ -f "$BASE/custom.sum" ] || return 0
     if [ -f "$BASE/custom.armed" ] && [ ! -f "$BASE/custom.active" ]; then
         read -r _ at < "$BASE/custom.armed"
         read -r up _ < /proc/uptime
-        [ "${up%.*}" -le $((${at:-0} + 60)) ] && { log "custom EDID kept for the re-plug"; return 0; }
+        [ "${up%.*}" -le $((${at:-0} + 60)) ] && { log "custom EDID kept 60 s for the re-plug"; return 0; }
     fi
     custom_clear
 }
 
-# On connect: an armed EDID that now shows 4K 75 Hz is in use.
+# On connect: is the EDID just read our custom one? Expected after arming; a leak otherwise.
 custom_on_connect() {
-    [ -f "$BASE/custom.armed" ] || return 0
-    case " $(offered)" in
-        *" 3840:2160:75 "*) read -r cid _ < "$BASE/custom.armed"; echo "$cid" > "$BASE/custom.active"; rm -f "$BASE/custom.armed"
-                            log "custom 4K 75 Hz EDID in use" ;;
-        *) custom_clear ;;
-    esac
+    [ -f "$BASE/custom.sum" ] || return 0
+    read -r want < "$BASE/custom.sum"
+    got=$(edid_hex | cksum)
+    if [ "$got" = "$want" ]; then
+        if [ -f "$BASE/custom.armed" ]; then
+            read -r cid _ < "$BASE/custom.armed"
+            echo "$cid" > "$BASE/custom.active"; rm -f "$BASE/custom.armed"
+            log "custom 4K 75 Hz EDID in use for $cid"
+        elif [ ! -f "$BASE/custom.active" ]; then
+            touch "$BASE/custom.leak"
+            log "WARNING: a custom EDID is still in use without being armed (clear failed); unplug to clear"
+        fi
+    else
+        # The monitor's own EDID was read: no custom EDID in effect any more.
+        rm -f "$BASE/custom.sum" "$BASE/custom.armed" "$BASE/custom.active" "$BASE/custom.leak"
+    fi
 }
 
 # Make the 4K 75 Hz EDID from the connected monitor's real one: a CVT-RB style timing (htotal 3920,
@@ -541,32 +569,25 @@ make_75() {
     echo "${new:0:254}$ck${new:256}"
 }
 
-exp75_arm() { # write the custom EDID for the connected monitor (takes effect at the next real plug-in)
-    x=$(make_75) || return 1
-    [ -n "$x" ] || return 1
-    debugfs_up || return 1
-    printf '%s' "$x" > "$DBG/edid" || return 1
-    read -r up _ < /proc/uptime
-    echo "$(edid_id) ${up%.*}" > "$BASE/custom.armed"
-    log "custom 4K 75 Hz EDID armed for $(edid_id); re-plug within 60 s"
-}
-
 exp75_cmd() {
     connected || { echo "error=No external display connected"; return 1; }
-    id=$(edid_id)
     case "$1" in
         on)
-            # A custom EDID already in use (4K 75 Hz offered) needs nothing new.
-            case " $(offered)" in *" 3840:2160:75 "*) put_set "exp75_$id" 1; [ -f "$BASE/custom.active" ] || echo "$id" > "$BASE/custom.active"; echo "ok=1"; return ;; esac
-            exp75_arm || { echo "error=This monitor does not qualify (needs 4K 60 Hz and a range up to 75 Hz)"; return 1; }
-            put_set "exp75_$id" 1
+            [ -f "$BASE/custom.leak" ] && { echo "error=An older custom EDID is still in use. Unplug the monitor and plug it back in first."; return 1; }
+            case " $(offered)" in *" 3840:2160:75 "*) echo "ok=1"; return ;; esac
+            x=$(make_75)
+            [ -n "$x" ] || { echo "error=This monitor does not qualify (needs 4K 60 Hz and a range up to 75 Hz)"; return 1; }
+            debugfs_up || { echo "error=Qualcomm DisplayPort debugfs not available"; return 1; }
+            printf '%s' "$x" > "$DBG/edid" || { echo "error=Could not write the custom EDID"; return 1; }
+            printf '%s' "$x" | cksum > "$BASE/custom.sum"
+            read -r up _ < /proc/uptime
+            echo "$(edid_id) ${up%.*}" > "$BASE/custom.armed"
+            log "custom 4K 75 Hz EDID armed for $(edid_id); re-plug within 60 s"
             echo "ok=1"; echo "replug=1" ;;
         off)
-            put_set "exp75_$id" ""
-            # An EDID still waiting for its re-plug is dropped now; one in use stays until the
-            # disconnect (clearing it now would take this monitor's modes away).
-            [ -f "$BASE/custom.armed" ] && [ ! -f "$BASE/custom.active" ] && custom_clear
-            echo "ok=1"; [ -f "$BASE/custom.active" ] && echo "replug=1" ;;
+            # Not armed any more: the next disconnect clears it (it cannot be cleared while connected).
+            rm -f "$BASE/custom.armed"
+            echo "ok=1"; [ -f "$BASE/custom.sum" ] && echo "replug=1" ;;
         *) echo "error=use: exp75 on|off" ;;
     esac
 }
@@ -593,14 +614,10 @@ watch() {
                 sum=$(cksum < $CONN/edid 2>/dev/null)
                 wait_sf >/dev/null
                 custom_on_connect
-                on_connect
+                # With a leaked custom EDID the monitor is misidentified: apply no profile to it.
+                [ -f "$BASE/custom.leak" ] || on_connect
                 pace
                 inner_apply
-                # Experimental 4K 75 Hz for this monitor but its real EDID came in: arm for a re-plug.
-                id=$(edid_id)
-                if [ "$(get_set "exp75_$id")" = 1 ] && [ ! -f "$BASE/custom.active" ] && [ ! -f "$BASE/custom.armed" ]; then
-                    case " $(offered)" in *" 3840:2160:75 "*) ;; *) exp75_arm ;; esac
-                fi
                 guard_start
             elif [ "$prev" = connected ]; then
                 guard_stop wake
@@ -616,7 +633,8 @@ watch() {
             if [ -n "$s2" ] && [ "$s2" != "$sum" ]; then
                 log "EDID changed without unplugging"
                 sum=$s2
-                on_connect
+                custom_on_connect
+                [ -f "$BASE/custom.leak" ] || on_connect
                 pace
             fi
             tick=$((tick + 1))
@@ -648,7 +666,7 @@ case "$1" in
     watch) tail -n 300 "$LOG" > "$LOG.trim" 2>/dev/null && mv -f "$LOG.trim" "$LOG"; watch ;;
     boot)
         # A fresh kernel has no custom EDID and no running guard.
-        rm -f "$BASE/custom.active" "$BASE/custom.armed" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/custom.active" "$BASE/custom.armed" "$BASE/custom.sum" "$BASE/custom.leak" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"

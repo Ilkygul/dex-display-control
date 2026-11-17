@@ -25,7 +25,7 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   events no longer wake the phone screen; only the side key, unplugging, a restart or an explicit
   command do. The switch is remembered and can always be turned off, also with no monitor attached.
 - **Phone screen refresh rate during DeX** (120, 80, 60, 48, 30 or 20 Hz), restored when you unplug.
-  Works alongside apps such as Galaxy Max Hz: their values are saved and put back.
+  Your own refresh rate settings (including ones set by other apps) are saved and put back.
 - **Experimental: 4K at 75 Hz** on 4K monitors that accept it, through a custom timing that stays
   within the phone's limits (see [Limits](#limits)).
 - **Soft-reboot fix.** On this phone a KernelSU soft reboot left the display composer unable to see

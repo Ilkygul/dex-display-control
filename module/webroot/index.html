@@ -88,20 +88,16 @@
   <div class="hint" id="phoneState" style="margin-top:8px"></div>
   <div class="sep"></div>
   <div>Phone screen refresh rate while a monitor is connected</div>
-  <div class="hint" style="margin:2px 0 10px">Saves power when you use the phone screen during DeX. Your normal setting (Galaxy Max Hz) comes back when you unplug. DeX may limit the phone screen to 60 Hz on its own.</div>
+  <div class="hint" style="margin:2px 0 10px">Saves power when you use the phone screen during DeX. Your normal setting comes back when you unplug. DeX may limit the phone screen to 60 Hz on its own.</div>
   <div class="chips" id="innerChips"></div>
   <div class="msg" id="phoneMsg"></div>
 </div>
 
 <details class="card" id="expCard">
   <summary>Experimental</summary>
-  <div class="row">
-    <div>
-      <div>4K at 75 Hz (custom timing)</div>
-      <div class="hint">Adds a 3840 × 2160 @ 75 Hz mode within the Fold's limits (655 MHz pixel clock, 8-bit colour). Tested on a Dell U3225QE. Needs one re-plug of this monitor after switching on, and again on every new connection.</div>
-    </div>
-    <label class="switch"><input type="checkbox" id="expSw"><span class="slider"></span></label>
-  </div>
+  <div>4K at 75 Hz (custom timing)</div>
+  <div class="hint">Adds a 3840 × 2160 @ 75 Hz mode within the Fold's limits (655 MHz pixel clock, 8-bit colour) for 4K monitors that accept it. Tested on a Dell U3225QE. After tapping, unplug this monitor and plug it back in within 60 seconds. It lasts until the monitor is unplugged; every other monitor is always read with its own data.</div>
+  <button class="wide" id="expBtn">Activate 4K 75 Hz for this monitor</button>
   <div class="hint" id="expState" style="margin-top:8px"></div>
   <div class="msg" id="expMsg"></div>
 </details>
@@ -222,16 +218,16 @@
   }
 
   function renderExp(s) {
-    const sw = el("expSw"), st = el("expState");
+    const btn = el("expBtn"), st = el("expState");
     const custom = s.custom || "";
     const has75 = s.modes.some((m) => keyOf(m) === "3840:2160:75");
-    sw.checked = s.exp75 === "1";
-    sw.disabled = busy || s.connected !== "1";
-    if (s.connected !== "1") { st.textContent = "Connect a monitor to use this."; return; }
-    if (custom.startsWith("armed:")) st.innerHTML = '<span class="warn">Unplug this monitor and plug it back in within 60 seconds to activate 4K 75 Hz.</span>';
-    else if (has75) st.innerHTML = '<span class="okc">Active: 3840 × 2160 @ 75 Hz is available above.</span>';
-    else if (s.exp75 === "1") st.textContent = "On for this monitor; it is prepared on the next connection.";
-    else st.textContent = "Off.";
+    const has4k60 = s.modes.some((m) => keyOf(m) === "3840:2160:60");
+    btn.disabled = busy || s.connected !== "1" || custom === "leak" || custom.startsWith("armed:") || has75 || !has4k60;
+    if (s.connected !== "1") { st.textContent = "Connect a 4K monitor to use this."; return; }
+    if (custom === "leak") { st.innerHTML = '<span class="warn">An older custom EDID is still in use, so this monitor may be shown with another monitor\'s data. Unplug it and plug it back in.</span>'; return; }
+    if (custom.startsWith("armed:")) { st.innerHTML = '<span class="warn">Unplug this monitor and plug it back in within 60 seconds to activate 4K 75 Hz.</span>'; return; }
+    if (has75) { st.innerHTML = '<span class="okc">Active: 3840 × 2160 @ 75 Hz is available above. It ends when you unplug the monitor.</span>'; return; }
+    st.textContent = has4k60 ? "Not active." : "This monitor does not offer 4K 60 Hz, so 4K 75 Hz does not apply.";
   }
 
   function render(s) {
@@ -378,14 +374,12 @@
     refresh();
   }
 
-  el("expSw").onchange = async (e) => {
-    const on = e.target.checked;
-    busy = true;
-    const out = parse((await run("sh " + SCRIPT + " exp75 " + (on ? "on" : "off"))).stdout || "");
+  el("expBtn").onclick = async () => {
+    busy = true; render(last);
+    const out = parse((await run("sh " + SCRIPT + " exp75 on")).stdout || "");
     busy = false;
-    if (out.error) { setMsg("expMsg", out.error, "err"); e.target.checked = !on; }
-    else if (on) setMsg("expMsg", out.replug ? "Prepared. Unplug the monitor and plug it back in within 60 seconds, then pick 3840 × 2160 @ 75 Hz." : "On.", "ok");
-    else setMsg("expMsg", out.replug ? "Off. 4K 75 Hz disappears when you unplug the monitor." : "Off.", "ok");
+    if (out.error) setMsg("expMsg", out.error, "err");
+    else setMsg("expMsg", out.replug ? "Prepared. Unplug this monitor and plug it back in within 60 seconds, then pick 3840 × 2160 @ 75 Hz." : "Already active.", "ok");
     refresh();
   };
 
