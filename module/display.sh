@@ -310,6 +310,13 @@ status() {
     read -r v 2>/dev/null < $G/max_gpuclk && echo "gpu_max=$v"
     read -r v 2>/dev/null < $G/gpuclk && echo "gpu_now=$v"
     read -r v _ 2>/dev/null < $G/gpu_available_frequencies && echo "gpu_top=$v"
+    read -r v _ 2>/dev/null < $G/gpu_busy_percentage && echo "gpu_busy=$v"
+    read -r v 2>/dev/null < /sys/kernel/gpu/gpu_max_clock && echo "gpu_smax=$v"
+    # Per CPU core group: current : maximum allowed now : hardware maximum (kHz).
+    for c in /sys/devices/system/cpu/cpufreq/policy*; do
+        read -r a1 2>/dev/null < $c/scaling_cur_freq; read -r a2 2>/dev/null < $c/scaling_max_freq; read -r a3 2>/dev/null < $c/cpuinfo_max_freq
+        echo "cpu_${c##*/}=$a1:$a2:$a3"
+    done
     for c in /sys/devices/system/cpu/cpufreq/policy*; do pol=$c; done
     read -r v 2>/dev/null < $pol/scaling_max_freq && echo "cpu_max=$v"
     read -r v 2>/dev/null < $pol/cpuinfo_max_freq && echo "cpu_top=$v"

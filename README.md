@@ -19,6 +19,11 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
 - **Apps run at the monitor's refresh rate.** Without this, Android keeps the phone's inner screen
   as the apps' frame clock, which DeX limits to 60 Hz: a browser on a 120 Hz monitor still drew
   60 fps. The module hands the clock to the monitor (verified with testufo.com: 60 -> 120 fps).
+- **Live panel** on the status page (right on a wide DeX window, on top on the phone): monitor Hz
+  and measured fps, phone screen, whole-phone power with a 60-second graph, temperatures with
+  coloured bars and a marker at your override limit, GPU and CPU clocks with a marker at the
+  maximum allowed right now (red when heat protection holds them back), GPU load, and the heat
+  control state, each with a short explanation. Green / orange / red show at a glance what is fine.
 - **Live status page** (KernelSU WebUI): monitor name, refresh rate, the rate DeX runs at, measured
   frames per second, DeX desktop size, colour depth, **whole-phone power** (live and 30 s average),
   **the phone screen's refresh rate and frames per second**, **temperatures and how far heat holds
@@ -77,7 +82,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.8.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.9.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.

@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.9.0 (2026-11-17)
+
+- Live panel (right on wide screens, on top on narrow ones): fps and power with 60-second graphs,
+  temperatures, GPU and CPU clocks with "allowed now" markers, GPU load, heat control state, each
+  with a short explanation; green / orange / red by level.
+- The overview uses the same colours (power, temperatures, performance, link utilisation).
+- Status adds GPU load, Samsung's GPU limit and the current clock of each CPU core group.
+
 ## v2.8.0 (2026-11-17)
 
 - Temperature override now also releases Samsung's own limit drivers: `cpufreq_limit`

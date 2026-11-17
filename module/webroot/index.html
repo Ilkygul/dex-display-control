@@ -8,11 +8,13 @@
   :root {
     --bg: #f4f5f7; --card: #ffffff; --text: #1b1d21; --muted: #646a73; --line: #e2e5ea;
     --accent: #2f6fde; --accent-soft: #e6eefc; --ok: #1f8a4c; --warn: #b4501f; --bar: #e9ecf1;
+    --good: #22a05a; --mid: #d99a1e; --bad: #d64545; --idle: #9aa1ab;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #111316; --card: #1b1e23; --text: #eceef1; --muted: #9aa1ab; --line: #2b2f36;
       --accent: #6b9cf0; --accent-soft: #1e2a3f; --ok: #4cc283; --warn: #f09a6b; --bar: #2a2f37;
+      --good: #4cc283; --mid: #f0b84a; --bad: #f07a7a; --idle: #6c737d;
     }
   }
   * { box-sizing: border-box; }
@@ -56,11 +58,42 @@
   details p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   .sep { border-top: 1px solid var(--line); margin: 14px 0; }
   .chip.over { opacity: .45; text-decoration: line-through; }
+  .layout { display: grid; gap: 0 16px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "live" "main"; }
+  .layout > main { grid-area: main; min-width: 0; }
+  .live { grid-area: live; }
+  @media (min-width: 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr) 340px; grid-template-areas: "main live"; align-items: start; }
+    .live { position: sticky; top: 16px; }
+  }
+  .live h2 { display: flex; justify-content: space-between; align-items: baseline; }
+  .lsec { margin-top: 12px; } .lsec:first-of-type { margin-top: 4px; }
+  .lhint { font-size: 12px; color: var(--muted); margin: -2px 0 4px; }
+  .ltitle { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 4px; }
+  .lrow { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .lrow .k { color: var(--muted); }
+  .lbig { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .c-good { color: var(--good); } .c-mid { color: var(--mid); } .c-bad { color: var(--bad); } .c-idle { color: var(--idle); }
+  .gauge { position: relative; height: 8px; background: var(--bar); border-radius: 4px; margin: 4px 0 8px; overflow: visible; }
+  .gauge > .fill { height: 100%; border-radius: 4px; transition: width .4s, background-color .4s; }
+  .gauge > .mark { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--text); opacity: .55; border-radius: 1px; }
+  .gauge > .mark.bad { background: var(--bad); opacity: 1; }
+  .f-good { background: var(--good); } .f-mid { background: var(--mid); } .f-bad { background: var(--bad); } .f-idle { background: var(--idle); } .f-acc { background: var(--accent); }
+  .spark { display: block; width: 100%; height: 30px; margin: 2px 0 6px; }
+  .spark polyline { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+  .spark .area { stroke: none; opacity: .15; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 12px; font-weight: 600; color: #fff; }
+  .p-good { background: var(--good); } .p-mid { background: var(--mid); } .p-bad { background: var(--bad); } .p-idle { background: var(--idle); }
   .confirm { border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
 <h1>DeX Display Control</h1>
+<div class="layout">
+<aside class="card live" id="live">
+  <h2><span>Live</span><span class="hint" id="liveStamp"></span></h2>
+  <div id="liveBody" class="empty">Loading…</div>
+</aside>
+<main>
 
 <div class="card">
   <div class="label">Monitor</div>
@@ -169,6 +202,9 @@
   <p><b>Phone power</b> is the whole phone's draw: the battery fuel gauge's system current times the system voltage, read once a second while this page is visible, averaged here over the last 30 seconds. It is the same whether the phone runs on its battery or on the monitor's power. Measured on a Fold8 with an LG 40U990A and a still DeX screen: 60 Hz about 2.0 W, 60 Hz with DSC about 2.15 W, 80 Hz (6-bit) about 2.4 W, 110 Hz with DSC about 3.0 W; DSC itself costs about 0.1 W, each extra Hz about 17 mW. Moving content costs more.</p>
   <p>This page only measures while it is open and visible: once a second, about 50 ms of work each time. Closed, it costs nothing. The background watcher reads one file every 3 seconds.</p>
 </details>
+
+</main>
+</div>
 
 <script>
   const SCRIPT = "/data/adb/modules/fold-display/display.sh";
@@ -356,7 +392,110 @@
     st.textContent = on ? "On for this monitor; applied at the next connection." : "Off.";
   }
 
+  // ---- Visual helpers: colour by level, gauges with a marker, small graphs (kept 60 s, in memory) ----
+  const hist = {};
+  function remember(key, t, v) {
+    if (v === null || v === undefined || isNaN(v)) return;
+    const a = hist[key] = hist[key] || [];
+    if (a.length && t <= a[a.length - 1].t) return;
+    a.push({ t, v }); while (a.length && t - a[0].t > 60) a.shift();
+  }
+  const lvl = (v, mid, bad) => v >= bad ? "bad" : v >= mid ? "mid" : "good";
+  function gauge(pct, cls, markPct, markBad) {
+    const p = Math.max(0, Math.min(100, pct));
+    let m = "";
+    if (markPct !== undefined && markPct !== null && !isNaN(markPct)) m = '<div class="mark' + (markBad ? " bad" : "") + '" style="left:calc(' + Math.max(0, Math.min(100, markPct)).toFixed(1) + '% - 1px)"></div>';
+    return '<div class="gauge"><div class="fill f-' + cls + '" style="width:' + p.toFixed(1) + '%"></div>' + m + "</div>";
+  }
+  function spark(key, lo, hi, cls) {
+    const a = hist[key]; if (!a || a.length < 2) return "";
+    const t0 = a[0].t, t1 = a[a.length - 1].t, span = Math.max(1, t1 - t0);
+    let max = hi, min = lo; for (const x of a) { if (x.v > max) max = x.v; if (x.v < min) min = x.v; }
+    const pts = a.map((x) => ((x.t - t0) / span * 100).toFixed(1) + "," + (28 - (x.v - min) / Math.max(1e-9, max - min) * 26).toFixed(1)).join(" ");
+    const col = "var(--" + (cls || "accent") + ")";
+    return '<svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline class="area" points="0,30 ' + pts + ' 100,30" style="fill:' + col + '"/><polyline points="' + pts + '" style="stroke:' + col + '"/></svg>';
+  }
+  const colored = (txt, cls) => '<span class="c-' + cls + '">' + txt + "</span>";
+  const pill = (txt, cls) => '<span class="pill p-' + cls + '">' + txt + "</span>";
+
+  // Temperature levels: skin is about touching it, the chip area and the battery about wear.
+  function tempLevel(name, v, s) {
+    const lim = (s.desk_limits || "::").split(":"), on = s.desk_mode === "1";
+    if (name === "BAT") { const L = on ? parseFloat(lim[0]) || 41 : 41; return { cls: lvl(v, L - 5, L), lo: 20, hi: Math.max(55, L + 3), mark: on ? L : null }; }
+    if (name === "AP") { const L = on ? parseFloat(lim[1]) || 80 : 80; return { cls: lvl(v, L - 20, L), lo: 20, hi: Math.max(100, L + 5), mark: on ? L : null }; }
+    const L = on && lim[2] !== "999" ? parseFloat(lim[2]) || 56 : 56;
+    return { cls: lvl(v, 43, on && lim[2] === "999" ? 999 : L), lo: 20, hi: 70, mark: on && lim[2] !== "999" ? L : null };
+  }
+
+  // Live panel: the numbers that change, in one place (right on wide screens, on top on narrow ones).
+  function renderLive(s) {
+    const t = parseFloat(s.t);
+    const sec = (title, body, hint) => body ? '<div class="lsec"><div class="ltitle">' + title + "</div>" + body + (hint ? '<div class="lhint">(' + hint + ")</div>" : "") + "</div>" : "";
+    const row = (k, v) => '<div class="lrow"><span class="k">' + k + "</span><span>" + v + "</span></div>";
+    const ghz = (k) => nf(k / 1e6, 2);
+    let h = "";
+    // Monitor: refresh rate, measured fps (graph), resolution, colour
+    if (s.connected === "1" && s.current) {
+      const hz = hzOf(s.current); remember("fps", t, fps);
+      const fcls = fps === null ? "idle" : fps < 5 ? "idle" : fps >= hz * 0.9 ? "good" : fps >= hz * 0.55 ? "mid" : "bad";
+      let b = '<div class="lbig">' + hz + " Hz" + (fps !== null ? " " + colored(nf(fps, 0) + " fps", fcls) : "") + "</div>";
+      if (fps !== null) b += gauge(fps / hz * 100, fcls) + spark("fps", 0, hz, fcls === "idle" ? "accent" : fcls);
+      b += row("Resolution", pretty(resOf(s.current)));
+      if (s.kern && s.kern.bpp) b += row("Colour", s.kern.bpp / 3 + "-bit" + (s.dsc_active === "1" ? " · DSC" : ""));
+      h += sec("Monitor", b, "fps = frames per second actually sent to the monitor; it drops when nothing on screen moves (grey), green = keeping up with the refresh rate, orange/red = apps cannot keep up; graph = last 60 s");
+    } else h += sec("Monitor", row("Monitor", "not connected"), "connect a monitor over USB-C");
+    // Phone screen
+    if (s.phone === "on") {
+      const ir = s.inner_rate ? Math.round(parseFloat(s.inner_rate)) : 0;
+      h += sec("Phone screen", row("Now", ir + " Hz" + (innerFps !== null ? " · " + nf(innerFps, 0) + " fps" : "")) + (innerFps !== null && ir ? gauge(innerFps / ir * 100, innerFps < 5 ? "idle" : "acc") : ""),
+        (s.inner_hz ? "set to " + s.inner_hz + " Hz while a monitor is connected" : "your normal refresh setting") + "; the phone screen costs extra power and heat while DeX runs");
+    } else h += sec("Phone screen", row("Now", colored("off", "good")), s.phone_guard === "1" ? "kept off while a monitor is connected" : "saves power and heat");
+    // Power with graph
+    if (pw.length) {
+      const now = pw[pw.length - 1].w, avg = pw.reduce((a, x) => a + x.w, 0) / pw.length, pc = lvl(now, 4, 7);
+      remember("power", t, now);
+      h += sec("Power (whole phone)", '<div class="lbig">' + colored(nf(now, 2) + " W", pc) + ' <span class="res">avg ' + nf(avg, 2) + " W</span></div>" + spark("power", 0, 4, pc),
+        "fuel gauge system current × voltage, " + (s.batt_status === "Discharging" ? "on battery" : "on external power (" + (s.batt_status || "").toLowerCase() + ")") + "; green under 4 W, orange 4-7 W, red above; graph = last 60 s");
+    }
+    // Temperatures: bar per sensor, marker at the override limit
+    const T = s.temps, st = parseInt(s.th_status, 10);
+    let tb = "";
+    if (!isNaN(st)) tb += row("Android status", pill(TH_WORDS[st], st >= 4 ? "bad" : st >= 2 ? "mid" : "good"));
+    for (const [n, label] of [["SKIN", "Skin (estimate)"], ["AP", "Chip area"], ["BAT", "Battery"]]) {
+      if (!T[n]) continue;
+      const L = tempLevel(n, T[n].v, s); remember("t" + n, t, T[n].v);
+      tb += row(label, colored(nf(T[n].v, 1) + " °C", L.cls)) + gauge((T[n].v - L.lo) / (L.hi - L.lo) * 100, L.cls, L.mark !== null ? (L.mark - L.lo) / (L.hi - L.lo) * 100 : null);
+    }
+    h += sec("Temperature", tb, "skin = Samsung's estimate, matters when you hold the phone; chip area = sensor next to the processor; battery = ages faster above about 45 °C" + (s.desk_mode === "1" ? "; marker = your temperature override limit" : "") + "; green = fine, orange = warm, red = at or near a limit");
+    // GPU: clock with a marker at what is allowed, load
+    const gt = parseFloat(s.gpu_top), gn = parseFloat(s.gpu_now), gk = parseFloat(s.gpu_max), gs = parseFloat(s.gpu_smax);
+    if (gt) {
+      const lim = Math.min(gk || gt, gs ? gs * 1e6 : gt), held = lim < gt * 0.97, busy = parseFloat(s.gpu_busy);
+      let g = row("Clock", Math.round(gn / 1e6) + " MHz" + ' <span class="label">/ ' + (held ? colored(Math.round(lim / 1e6) + " MHz allowed", "bad") : Math.round(gt / 1e6) + " MHz") + "</span>");
+      g += gauge(gn / gt * 100, held ? "mid" : "acc", lim / gt * 100, held);
+      if (!isNaN(busy)) { const bc = lvl(busy, 70, 92); g += row("Load", colored(nf(busy, 0) + " %", bc)) + gauge(busy, bc); }
+      h += sec("GPU", g, "clock = speed right now, it goes up and down with the work; marker = the maximum allowed now (red when heat protection holds it back); load = how busy the GPU is");
+    }
+    // CPU per core group: current clock, marker at the allowed maximum
+    const groups = Object.keys(s).filter((k) => k.startsWith("cpu_policy")).map((k) => { const p = s[k].split(":").map(Number); return { cur: p[0], max: p[1], top: p[2] }; }).sort((a, b) => b.top - a.top);
+    let cb2 = "";
+    groups.forEach((g, i) => {
+      const held = g.max < g.top * 0.97;
+      cb2 += row(i === 0 ? "Fast cores" : "Other cores", ghz(g.cur) + " GHz" + ' <span class="label">/ ' + (held ? colored(ghz(g.max) + " allowed", "bad") : ghz(g.top)) + "</span>");
+      cb2 += gauge(g.cur / g.top * 100, held ? "mid" : "acc", g.max / g.top * 100, held);
+    });
+    h += sec("CPU", cb2, "speed right now / maximum allowed; fast cores do the heavy work; a red marker means heat protection holds them back");
+    // Heat control
+    const d = s.desk_state || "";
+    h += sec("Heat control", row("Temperature override", s.desk_mode !== "1" ? pill("off · Samsung", "idle") : d.startsWith("on") ? pill("full speed", "good") : d.startsWith("back") ? pill("Samsung: " + d.slice(5), "mid") : pill("waiting for a monitor", "idle"))
+      + (s.thermal_lowered ? row("Monitor", pill("60 Hz while hot", "mid")) : ""),
+      s.desk_mode === "1" ? "full speed = Samsung's heat limits are lifted until one of your limits is reached" : "Samsung's own heat protection decides the limits");
+    el("liveBody").className = ""; el("liveBody").innerHTML = h;
+    el("liveStamp").textContent = new Date().toLocaleTimeString();
+  }
+
   function render(s) {
+    renderLive(s);
     el("stamp").textContent = "Updated " + new Date().toLocaleTimeString();
     renderPhone(s);
     renderExp(s);
@@ -395,7 +534,7 @@
       t += fact("DP link", s.kern.ln + " lanes × " + nf(per, 2) + " Gbit/s" + (names[s.kern.lr] ? " (" + names[s.kern.lr] + ")" : "") + " = " + nf(raw, 1) + " Gbit/s");
       const need = (s.kern.mhz * s.kern.bpp) / 1000, pct = Math.min(100, (need / eff) * 100);
       t += fact("Link utilisation", nf(need, 2) + " of " + nf(eff, 2) + " Gbit/s (" + nf(pct, 0) + "%, " + s.kern.bpp + " bits per pixel)",
-        '<div class="bar"><div style="width:' + pct.toFixed(1) + '%"></div></div>');
+        gauge(pct, lvl(pct, 90, 99)));
       t += fact("Pixel clock", nf(s.kern.mhz, 1) + " MHz");
     } else if (s.current) {
       const r = resOf(s.current).split("x").map(Number), p = pclkFor(s, r[0], r[1], hzOf(s.current));
@@ -465,12 +604,18 @@
     if (T.AP) parts.push("chip " + nf(T.AP.v, 1) + " °C");
     if (T.BAT) parts.push("battery " + nf(T.BAT.v, 1) + " °C");
     const st = parseInt(s.th_status, 10);
-    if (parts.length) f += fact("Temperature", parts.join(" · "), !isNaN(st) ? (st >= 3 ? warn("(" + TH_WORDS[st] + ")") : ' <span class="label">(' + TH_WORDS[st] + ")</span>") : "");
+    if (parts.length) {
+      const cp = [];
+      if (T.SKIN) cp.push("skin " + colored(nf(T.SKIN.v, 1) + " °C", tempLevel("SKIN", T.SKIN.v, s).cls));
+      if (T.AP) cp.push("chip " + colored(nf(T.AP.v, 1) + " °C", tempLevel("AP", T.AP.v, s).cls));
+      if (T.BAT) cp.push("battery " + colored(nf(T.BAT.v, 1) + " °C", tempLevel("BAT", T.BAT.v, s).cls));
+      f += fact("Temperature", cp.join(" · "), !isNaN(st) ? " " + pill(TH_WORDS[st], st >= 4 ? "bad" : st >= 2 ? "mid" : "good") : "");
+    }
     const gm = parseFloat(s.gpu_max), gt = parseFloat(s.gpu_top), cm = parseFloat(s.cpu_max), ct = parseFloat(s.cpu_top);
     if (gm && gt) {
       const gl = gm < gt * 0.97, cl = cm && ct && cm < ct * 0.97, hard = gm < gt * 0.7;
       const txt = "GPU up to " + Math.round(gm / 1e6) + " of " + Math.round(gt / 1e6) + " MHz" + (cm && ct ? " · CPU up to " + nf(cm / 1e6, 2) + " of " + nf(ct / 1e6, 2) + " GHz" : "");
-      f += fact("Performance", txt, gl || cl ? warn(hard ? "(phone hot: held back hard, fast modes will not reach their fps)" : "(held back a little by heat)") : ' <span class="label">(full speed)</span>');
+      f += fact("Performance", txt, " " + (gl || cl ? pill(hard ? "held back hard" : "held back a little", hard ? "bad" : "mid") : pill("full speed", "good")));
     }
     return f;
   }
@@ -479,7 +624,7 @@
     if (!pw.length) return "";
     const now = pw[pw.length - 1].w, avg = pw.reduce((a, x) => a + x.w, 0) / pw.length, span = Math.round(pw[pw.length - 1].t - pw[0].t);
     const src = s.batt_status === "Discharging" ? "on battery" : "on external power";
-    return fact("Phone power", nf(now, 2) + " W", ' <span class="label">(' + (span >= 5 ? nf(avg, 2) + " W over " + span + " s, " : "") + "whole phone, " + src + ")</span>");
+    return fact("Phone power", colored(nf(now, 2) + " W", lvl(now, 4, 7)), ' <span class="label">(' + (span >= 5 ? nf(avg, 2) + " W over " + span + " s, " : "") + "whole phone, " + src + ")</span>");
   }
 
   function sample(s) {
@@ -625,7 +770,7 @@
     while (!document.hidden) { await refresh(); await new Promise((ok) => setTimeout(ok, 1000)); }
     polling = false;
   }
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; pw = []; prevInner = null; innerFps = null; loop(); } });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; pw = []; prevInner = null; innerFps = null; for (const k in hist) delete hist[k]; loop(); } });
   loop();
 </script>
 </body>
