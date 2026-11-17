@@ -12,9 +12,10 @@ Internet on DeX.
 | Chip | Qualcomm Snapdragon SM8850 (`canoe`), Adreno 840 |
 | Software | Android 17, One UI 9.0, build F971BXXU3AZI5 (security patch 2026-09-05), kernel 6.12.58 GKI |
 | Root | KernelSU samsung-v2.2, temporary root loaded after boot by DFRoot 4.7 |
-| DisplayPort | Qualcomm DP with Samsung secdp driver; max pixel clock 675 MHz, link capped at HBR2 x4 by default, DSC/FEC off |
+| DisplayPort | Qualcomm DP with Samsung secdp driver; link HBR2 x4 (17.28 Gbit/s of pixel data), HBR3 not available, DSC/FEC off |
 | Monitor 1 | XREAL One Pro AR glasses (EDID modes 1920x1080 at 60/90/120 Hz, preferred 90 Hz) |
 | Monitor 2 | Dell U3225QE 31.5" 4K 120 Hz, connected by USB-C into its Thunderbolt/USB-C input (DisplayPort Alt Mode) |
+| Monitor 3 | LG UltraFine 40U990A 40" 5120x2160 (5K2K) 120 Hz, connected by USB-C into its Thunderbolt 5 input (DisplayPort Alt Mode) |
 
 ## Results
 
@@ -31,12 +32,24 @@ Internet on DeX.
 | Same with the fix | Dell U3225QE | DeX follows: 3840x2160 / 2560x1440, about 6 s per switch |
 | Monitor name after swapping monitors | XREAL -> Dell | Correct ("DELL U3225QE") after replacing a stale Samsung sysfs source |
 | Experimental 4K 75 Hz (custom EDID timing) | Dell U3225QE | Works: `3840x2160@75fps 24bpp 655350Khz`, 4 x HBR2, picture clean, testufo.com 75 fps |
-| 4K 90 / 100 Hz (DisplayID timings + HBR3) | Dell U3225QE | Not possible: needs 811 / 906 MHz pixel clock, limit 675 MHz can only be lowered |
-| 4K 120 Hz | Dell U3225QE | Not possible: ~1098 MHz pixel clock and more bandwidth than HBR3 without DSC |
+| 4K 90 / 100 Hz (DisplayID timings) | Dell U3225QE | Not possible: 19.5 / 21.7 Gbit/s at 8-bit, the link carries 17.28 (HBR2 x4); HBR3 could not be enabled |
+| 4K 120 Hz | Dell U3225QE | Not possible: about 26 Gbit/s at 8-bit |
+| Default connection | LG 40U990A | 5120x2160 at 60 Hz offered and used; modes up to 5120x2160 at 60, 3440x1440 at 60, 1920x1080 at 120 |
+| 5120x2160 at 60 Hz | LG 40U990A | Works: `5120x2160@60fps 24bpp 704180Khz`, 4 x HBR2 (98% link use), DeX 5120x2160, pacesetter on the monitor |
+| 5120x2160 above 60 Hz (85/100/120 Hz in the EDID) | LG 40U990A | Not offered: over the link's 17.28 Gbit/s. Forcing HBR3 in debugfs (`max_bw_code`/`link_bw_code` 30) was accepted but the link still trained HBR2 |
+| 4K 120 Hz 4:2:0 (in the LG's EDID) | LG 40U990A | Not offered by the phone |
+| Pixel clock above the device tree's 675 MHz | LG 40U990A | Works at 704 MHz, so 675 MHz is not the real limit (the DP engine runs two pixels per clock) |
+| Link after a re-plug through a USB hub | LG 40U990A | Fell back to 2 lanes once (half the bandwidth); a direct re-plug restored 4 lanes |
+| Software re-plug (`ExtDispOff,1` / `,0` on `/sys/class/dp_sec/dex`) | LG 40U990A | Link retrained, EDID read again, picture back in about 10 s; used by the module instead of a physical re-plug |
+| Custom EDID left from another monitor (Dell's 4K 75 Hz EDID shown on the LG) | LG 40U990A | Seen before v2.1.0 (clearing by writing invalid hex does not work on Samsung's kernel). v2.1.0: detected at connect and repaired automatically in 8 s (simulated with a marked EDID), 4 lanes and 5120x2160 at 60 kept |
+| Custom EDID active, then the monitor disconnects | LG 40U990A | Cleared while disconnected and verified at the next connect: monitor read with its own EDID |
+| 4K 75 Hz on a monitor without 4K 60 Hz | LG 40U990A | Refused with a clear message, nothing changed |
 | Phone screen refresh 30 Hz during DeX | Dell U3225QE | Works: SurfaceFlinger inner render 30 Hz; previous 120/120 restored on "Don't change" |
 | Keep phone screen off: unwanted wake | Dell U3225QE | `cmd power wakeup` while guarded: turned off again within 0.5 s |
 | Keep phone screen off: wake on purpose (`phone on`, Termux button) | Dell U3225QE | Stays on; guarded again after `phone off` |
 | Keep phone screen off: switch off | Dell U3225QE | Phone screen wakes |
+| Keep phone screen off: side key | Dell U3225QE | Side key wakes the phone screen; after it turns off again it is kept off |
+| Termux / DeX screen buttons with the switch on | Dell U3225QE | Work (they call `display.sh phone on/off`) |
 | Sleep only the phone's display group | Dell U3225QE | DeX keeps running, no lock screen, monitor stays the frame clock |
 | Soft reboot (KernelSU) with a monitor | Dell / XREAL | Before the fix: monitors not detected until a full reboot. With the composer restart in the soft-reboot window: monitor detected, Vector active |
 
@@ -50,9 +63,6 @@ Internet on DeX.
 
 ## Not yet tested
 
-- The side key with "Keep phone screen off" on.
-- Clearing the experimental custom EDID on unplug (Samsung's kernel may differ from Qualcomm's
-  public source). Until verified: reboot before plugging in a different monitor after using 4K 75 Hz.
 - XREAL "ultrawide" mode (a monitor that changes its own EDID without unplugging): handled in code
   (EDID checksum watch, per-variant profiles), not yet tried.
 - The soft-reboot composer restart as part of the module (it was tested as a stand-alone

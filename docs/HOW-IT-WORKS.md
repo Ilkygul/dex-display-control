@@ -67,25 +67,45 @@ each connect (the kernel log ring buffer only holds about 90 seconds on this pho
 
 ## Limits of the DisplayPort output
 
-- Pixel clock: 675 MHz (`qcom,max-pclk-frequency-khz`). Qualcomm's debugfs `max_pclk_khz` accepts
-  only lower values ("org: 675000").
-- Link: HBR2 x4 by default (`max_bw_code` 20); HBR3 can be enabled in debugfs, but without a higher
-  pixel clock it gains nothing. DSC and FEC are off.
+- **Link bandwidth is the limit.** `dp_display_validate_link_clock` rejects modes above the link's
+  payload: 4 lanes x HBR2 = 17.28 Gbit/s after 8b/10b coding. Pixel clock x bits per pixel must fit,
+  which is why 4K 60 Hz runs at 10-bit but 5120x2160 at 60 Hz and 4K 75 Hz run at 8-bit.
+- **HBR3 is not reachable.** Qualcomm's debugfs accepts `max_bw_code` and `link_bw_code` 30 (HBR3),
+  but Samsung's driver still trains `bw_code` 20 (HBR2). One re-plug with HBR3 forced fell back to
+  2 lanes; the defaults (20 / 0) were restored.
+- **Pixel clock:** the device tree says 675 MHz (`qcom,max-pclk-frequency-khz`, debugfs
+  `max_pclk_khz` "org: 675000", can only be lowered), but the LG ran at 704 MHz: the engine handles
+  two pixels per clock, so the bandwidth check is what bites.
+- DSC and FEC are off. Lanes: the kernel may fall back to 2 lanes (`lane_count_down_shift`), which
+  halves the bandwidth; `dp_debug` in debugfs shows `num_lanes`.
 - Mode table: Samsung's secdp driver keeps a resolution table, but modes outside it (1600x1200) were
   still offered, so it does not act as a strict filter.
+
+## Software re-plug
+
+Samsung's `/sys/class/dp_sec/dex` accepts `ExtDispOff,1` and `ExtDispOff,0` (secdp_extdisp_off/on).
+Off then on is a full re-plug in software: the link is trained again and the EDID read again. The
+module uses it for the experimental timing and its repair. It marks the window with
+`extdisp.off`, so if it is ever interrupted the watcher switches the output back on at its next
+start. Our own re-plugs are marked with `replug.busy` so the watcher does not treat them as unplugs.
+Writing `hpd` in Qualcomm's debugfs does nothing on Samsung's driver.
 
 ## Experimental 4K 75 Hz
 
 Qualcomm's DP debugfs (`/sys/kernel/debug/drm_dp/edid`, debugfs mounted on demand) accepts a
-replacement EDID as hex text and uses it at the next real hotplug. The module copies the monitor's
-EDID and replaces its serial-number (or dummy/text) descriptor with a 3840x2160 timing at 655.35 MHz
-(the most a standard timing descriptor can hold): htotal 3920, vtotal 2229, 75.0 Hz. It only does
-this for monitors that offer 4K 60 Hz and whose range limits allow 75 Hz and at least 656 MHz.
+replacement EDID as hex text; while one is set, the kernel uses it instead of reading the monitor.
+The module copies the monitor's EDID and replaces its serial-number (or dummy/text) descriptor with a
+3840x2160 timing at 655.35 MHz (the most a standard timing descriptor can hold): htotal 3920, vtotal
+2229, 75.0 Hz, 15.7 Gbit/s at 8-bit. It only does this for monitors that offer 4K 60 Hz and whose
+range limits allow 75 Hz and at least 656 MHz. Then a software re-plug applies it.
 
-- Writing invalid hex makes the kernel handler pass NULL, which clears the custom EDID (per
-  Qualcomm's public `dp_debug.c`). Writing a short valid string instead creates a 0-byte custom EDID
-  that the next hotplug would parse - never do that.
-- Writing to `hpd` (simulated hotplug) did not reconnect on Samsung's driver, so a real re-plug is
-  needed after arming.
-- The custom EDID would apply to any monitor plugged in next, so it is armed only for 60 seconds
-  for a re-plug of the same monitor, and cleared on every disconnect.
+Clearing it:
+
+- On Samsung's kernel, writing invalid hex to `edid` did **not** clear it (a Dell's 4K 75 Hz EDID
+  was later used for an LG). Writing a short valid string creates a 0-byte custom EDID - never do
+  that.
+- What works: `echo 0 > drm_dp/sim` (debug sim off, which drops the custom EDID) while the output is
+  off: with nothing connected, or between `ExtDispOff,1` and `ExtDispOff,0`.
+- The module remembers a checksum of the custom EDID it wrote. At every connect it compares the EDID
+  the kernel read: if it is the custom one and 4K 75 Hz is not active for this monitor, it clears it
+  with a software re-plug and checks again. So a leak is repaired by itself, without unplugging.

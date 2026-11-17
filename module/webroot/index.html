@@ -96,7 +96,7 @@
 <details class="card" id="expCard">
   <summary>Experimental</summary>
   <div>4K at 75 Hz (custom timing)</div>
-  <div class="hint">Adds a 3840 × 2160 @ 75 Hz mode within the Fold's limits (655 MHz pixel clock, 8-bit colour) for 4K monitors that accept it. Tested on a Dell U3225QE. After tapping, unplug this monitor and plug it back in within 60 seconds. It lasts until the monitor is unplugged; every other monitor is always read with its own data.</div>
+  <div class="hint">Adds a 3840 × 2160 @ 75 Hz mode for 4K monitors that accept it (8-bit colour, within the link's 17.28 Gbit/s). Tested on a Dell U3225QE. The monitor reconnects once by itself; nothing to unplug. It ends when you turn it off or unplug the monitor, and every other monitor is always read with its own data.</div>
   <button class="wide" id="expBtn">Activate 4K 75 Hz for this monitor</button>
   <div class="hint" id="expState" style="margin-top:8px"></div>
   <div class="msg" id="expMsg"></div>
@@ -107,13 +107,12 @@
   <dl class="facts" id="tech" style="margin-top:4px"></dl>
   <p><b>Refresh rate</b> and <b>resolution</b> at the top are the mode the display engine drives the cable with (SurfaceFlinger). <b>Link timing</b>, <b>DP link</b>, <b>Link utilisation</b> and <b>Pixel clock</b> come from the line the kernel writes when the monitor connects, so they change only at the next (re)connection. The monitor's name and EDID are read from the connector on every refresh.</p>
   <p><b>Frames per second</b> counts the frames SurfaceFlinger composed for the monitor since the previous refresh. It drops when nothing on screen changes; with motion (scrolling, video, testufo.com) it should match the refresh rate.</p>
-  <p><b>Link utilisation</b> is pixel clock × bits per pixel against what the link carries after 8b/10b coding. The Fold's DisplayPort output is limited to 675 MHz pixel clock (device tree qcom,max-pclk-frequency-khz), which is why 4K stops at 75 Hz.</p>
+  <p><b>Link utilisation</b> is pixel clock × bits per pixel against what the link carries after 8b/10b coding. The phone always trains the link at HBR2 with 4 lanes: 17.28 Gbit/s of pixel data. That is the real ceiling: 5120 × 2160 @ 60 Hz and 4K @ 75 Hz only fit at 8-bit colour, and 4K @ 90 Hz or more does not fit at all. If the lanes drop to 2 (some hubs), half is left.</p>
   <p>This page only measures while it is open and visible: once a second, about 50 ms of work each time. Closed, it costs nothing. The background watcher reads one file every 3 seconds.</p>
 </details>
 
 <script>
   const SCRIPT = "/data/adb/modules/fold-display/display.sh";
-  const FOLD_MAX_PCLK = 675;
   const INNER_RATES = [120, 80, 60, 48, 30, 20];
   let cb = 0, busy = false, last = null, prevSample = null, fps = null, dexMismatch = false;
 
@@ -219,14 +218,13 @@
 
   function renderExp(s) {
     const btn = el("expBtn"), st = el("expState");
-    const custom = s.custom || "";
+    const active = (s.custom || "").startsWith("active:");
     const has75 = s.modes.some((m) => keyOf(m) === "3840:2160:75");
     const has4k60 = s.modes.some((m) => keyOf(m) === "3840:2160:60");
-    btn.disabled = busy || s.connected !== "1" || custom === "leak" || custom.startsWith("armed:") || has75 || !has4k60;
+    btn.textContent = active ? "Turn 4K 75 Hz off" : "Activate 4K 75 Hz for this monitor";
+    btn.disabled = busy || s.connected !== "1" || (!active && !has4k60);
     if (s.connected !== "1") { st.textContent = "Connect a 4K monitor to use this."; return; }
-    if (custom === "leak") { st.innerHTML = '<span class="warn">An older custom EDID is still in use, so this monitor may be shown with another monitor\'s data. Unplug it and plug it back in.</span>'; return; }
-    if (custom.startsWith("armed:")) { st.innerHTML = '<span class="warn">Unplug this monitor and plug it back in within 60 seconds to activate 4K 75 Hz.</span>'; return; }
-    if (has75) { st.innerHTML = '<span class="okc">Active: 3840 × 2160 @ 75 Hz is available above. It ends when you unplug the monitor.</span>'; return; }
+    if (active && has75) { st.innerHTML = '<span class="okc">Active: 3840 × 2160 @ 75 Hz is available above.</span>'; return; }
     st.textContent = has4k60 ? "Not active." : "This monitor does not offer 4K 60 Hz, so 4K 75 Hz does not apply.";
   }
 
@@ -270,10 +268,10 @@
       const need = (s.kern.mhz * s.kern.bpp) / 1000, pct = Math.min(100, (need / eff) * 100);
       t += fact("Link utilisation", nf(need, 2) + " of " + nf(eff, 2) + " Gbit/s (" + nf(pct, 0) + "%, " + s.kern.bpp + " bits per pixel)",
         '<div class="bar"><div style="width:' + pct.toFixed(1) + '%"></div></div>');
-      t += fact("Pixel clock", nf(s.kern.mhz, 1) + " of max " + FOLD_MAX_PCLK + " MHz");
+      t += fact("Pixel clock", nf(s.kern.mhz, 1) + " MHz");
     } else if (s.current) {
       const r = resOf(s.current).split("x").map(Number), p = pclkFor(s, r[0], r[1], hzOf(s.current));
-      t += fact("Pixel clock", (p.exact ? "" : "≈ ") + nf(p.mhz, 1) + " of max " + FOLD_MAX_PCLK + " MHz");
+      t += fact("Pixel clock", (p.exact ? "" : "≈ ") + nf(p.mhz, 1) + " MHz");
       t += fact("DP link", "known after the next (re)connection");
     }
     if (s.density) t += fact("DeX density", s.density + " dpi");
@@ -375,11 +373,13 @@
   }
 
   el("expBtn").onclick = async () => {
+    const active = last && (last.custom || "").startsWith("active:");
     busy = true; render(last);
-    const out = parse((await run("sh " + SCRIPT + " exp75 on")).stdout || "");
+    setMsg("expMsg", active ? "Turning 4K 75 Hz off. The monitor reconnects…" : "Adding 4K 75 Hz. The monitor reconnects…");
+    const out = parse((await run("sh " + SCRIPT + " exp75 " + (active ? "off" : "on"))).stdout || "");
     busy = false;
     if (out.error) setMsg("expMsg", out.error, "err");
-    else setMsg("expMsg", out.replug ? "Prepared. Unplug this monitor and plug it back in within 60 seconds, then pick 3840 × 2160 @ 75 Hz." : "Already active.", "ok");
+    else setMsg("expMsg", active ? "Off. The monitor runs with its own data again." : "Done. Pick 3840 × 2160 @ 75 Hz above.", "ok");
     refresh();
   };
 
