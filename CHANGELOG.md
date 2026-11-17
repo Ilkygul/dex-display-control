@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.6.0 (2026-11-17)
+
+- Page: phone screen refresh rate and measured fps with its setting; temperatures (skin, chip,
+  battery) and Android's thermal status; how far heat holds the GPU and CPU back.
+- Optional "60 Hz while the phone is hot" (`thermal-fallback on|off`): lowers a fast monitor to
+  60 Hz while the GPU is held back hard, and goes back once the phone has cooled down.
+
 ## v2.5.1 (2026-11-17)
 
 - Fix (found in a reboot test): right after boot the extra rates were checked before Android had

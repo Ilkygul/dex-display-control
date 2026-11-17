@@ -131,6 +131,22 @@ The page shows, per mode, what the kernel will send: from the monitor's maximum 
 capped by `max_bpp` 30) down in steps of 6 bits per pixel until pixel clock x bits fits the link;
 with DSC the maximum, compressed. Worked out after every connect from `edid_modes` and the live link.
 
+## Heat
+
+Samsung's thermal service (vendor.samsung.hardware.thermal, with a neural-network skin estimate
+from about ten sensors, `/vendor/etc/thermal_nn_config.json`) and Android's thermal status decide
+how far the GPU and CPU may run. The GPU limit shows in `/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel`
+and `max_gpuclk` (level 8 = 646 of 1300 MHz), the CPU limit in the last cpufreq policy's
+`scaling_max_freq`. These limits come and go within seconds; the kernel's own GPU cooling devices
+stayed at 0. Qualcomm's display composer also has a heat-to-fps table
+(`/vendor/etc/display/thermallevel_to_fps.xml`: 90 fps from level 5, 60 fps from level 8).
+
+The page shows the HAL's temperatures (skin, chip, battery), the thermal status and the current
+GPU/CPU caps. With "60 Hz while the phone is hot" on, the watcher checks every 30 s: GPU level 6
+or higher (826 MHz) or thermal status critical twice in a row lowers the monitor to 60 Hz at the
+same resolution; three cool checks (level 2 or lower, status moderate or lower) and at least
+3 minutes bring the saved mode back.
+
 ## One action at a time
 
 Commands, the confirmation timer and the watcher's connect handling all reconnect the monitor. A

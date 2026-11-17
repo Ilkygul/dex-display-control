@@ -274,46 +274,65 @@ status() {
         read -r _ cp cd < "$CONF"; read -r u _ < /proc/uptime; u=${u%.*}
         echo "confirm_prev=$cp"; echo "confirm_left=$((cd - u > 0 ? cd - u : 0))"
     fi
-    if ! connected; then
-        echo "connected=0"
-        return 0
-    fi
-    echo "connected=1"
-    echo "edid=$(edid_hex)"
+    # Heat: Android's thermal status and the HAL's temperatures (one cheap dumpsys), and how far the
+    # GPU and the fastest CPU cores are held back right now (sysfs).
+    dumpsys thermalservice 2>/dev/null | sed -n -e 's/^Thermal Status: \([0-9]*\).*/th_status=\1/p' \
+        -e '/Current temperatures from HAL/,/Current cooling/s/.*mValue=\([0-9.]*\), mType=[0-9]*, mName=\([A-Z]*\), mStatus=\([0-9]*\).*/t_\2=\1:\3/p'
+    G=/sys/class/kgsl/kgsl-3d0
+    read -r v 2>/dev/null < $G/max_gpuclk && echo "gpu_max=$v"
+    read -r v 2>/dev/null < $G/gpuclk && echo "gpu_now=$v"
+    read -r v _ 2>/dev/null < $G/gpu_available_frequencies && echo "gpu_top=$v"
+    for c in /sys/devices/system/cpu/cpufreq/policy*; do pol=$c; done
+    read -r v 2>/dev/null < $pol/scaling_max_freq && echo "cpu_max=$v"
+    read -r v 2>/dev/null < $pol/cpuinfo_max_freq && echo "cpu_top=$v"
+    echo "thermal_fallback=$(get_set thermal_fallback)"
+    [ -f "$THL" ] && { read -r _ tp _ < "$THL"; echo "thermal_lowered=$tp"; }
     disp=$(dumpsys SurfaceFlinger --displays 2>/dev/null)
-    # One pass over SurfaceFlinger's displays: the phone panel's render rate (the one powered on).
-    cur=""; typ=""; pm=""
+    # One pass over SurfaceFlinger's displays: the phone panel that is on (render rate, id).
+    cur=""; typ=""; pm=""; inid=""
     while IFS= read -r l; do
         case "$l" in
             "Display "*) cur=${l#Display }; typ=""; pm="" ;;
             *connectionType=*) typ=${l#*=} ;;
             *powerMode=*) pm=${l#*=} ;;
-            *renderRate=*) [ "$typ" = Internal ] && [ "$pm" = ON ] && { r=${l#*=}; echo "inner_rate=${r% Hz}"; } ;;
+            *renderRate=*) [ "$typ" = Internal ] && [ "$pm" = ON ] && { r=${l#*=}; echo "inner_rate=${r% Hz}"; inid=$cur; } ;;
         esac
     done <<EOF
 $disp
 EOF
-    b=$(printf '%s\n' "$disp" | ext_from)
-    sfid=${b%%
+    b=""; sfid=""
+    if connected; then
+        b=$(printf '%s\n' "$disp" | ext_from)
+        sfid=${b%%
 *}; sfid=${sfid#Display }
-    [ -n "$sfid" ] || return 0
+    fi
+    # Pacesetter and the frame counters (HWC + GPU) of the monitor and of the phone panel; two
+    # readings give frames per second.
+    pid=""; n=0; ni=0; sp=${sfid:-none}; ip=${inid:-none}
+    while IFS='=' read -r k v; do
+        case "$k" in
+            pid) pid=$v ;;
+            fc) n=$((n + v)) ;;
+            fi) ni=$((ni + v)) ;;
+        esac
+    done <<EOF
+$(dumpsys SurfaceFlinger --scheduler 2>/dev/null | sed -n \
+    -e 's/^ *pacesetterDisplayId=\([0-9]*\).*/pid=\1/p' \
+    -e "/^[A-Za-z]* Display $sp\$/,/^[A-Za-z]* Display [0-9]/s/^ *[HG][WP][CU] frame count: \([0-9]*\).*/fc=\1/p" \
+    -e "/^[A-Za-z]* Display $ip\$/,/^[A-Za-z]* Display [0-9]/s/^ *[HG][WP][CU] frame count: \([0-9]*\).*/fi=\1/p")
+EOF
+    [ -n "$inid" ] && echo "inner_frames=$ni"
+    if [ -z "$sfid" ]; then
+        connected && echo "connected=1" || echo "connected=0"
+        return 0
+    fi
+    echo "connected=1"
+    echo "edid=$(edid_hex)"
     echo "sfid=$sfid"
     printf '%s\n' "$b" | sed -n \
         -e 's/.*activeMode={id=[0-9]*, hwcId=[0-9]*, resolution=\([0-9x]*\), vsyncRate=\([0-9.]*\) Hz.*/current=\1@\2/p' \
         -e 's/^ *renderRate=\([0-9.]*\) Hz.*/render=\1/p' \
         -e 's/^ *{id=[0-9]*, hwcId=[0-9]*, resolution=\([0-9x]*\), vsyncRate=\([0-9.]*\) Hz.*/mode=\1@\2/p'
-    # Pacesetter and this display's frame counters (HWC + GPU); two readings give frames/s.
-    pid=""; n=0
-    while IFS='=' read -r k v; do
-        case "$k" in
-            pid) pid=$v ;;
-            fc) n=$((n + v)) ;;
-        esac
-    done <<EOF
-$(dumpsys SurfaceFlinger --scheduler 2>/dev/null | sed -n \
-    -e 's/^ *pacesetterDisplayId=\([0-9]*\).*/pid=\1/p' \
-    -e "/^[A-Za-z]* Display $sfid\$/,/^[A-Za-z]* Display [0-9]/s/^ *[HG][WP][CU] frame count: \([0-9]*\).*/fc=\1/p")
-EOF
     echo "frames=$n"
     if [ "$pid" = "$sfid" ]; then
         echo "pacesetter=1"
@@ -420,6 +439,16 @@ on_connect() {
         # No usable profile: honour DeX's own resolution choice, if the monitor offers it.
         case "$have" in *" $pref "*) want=$pref ;; esac
     fi
+    # Lowered because of heat: stay at 60 Hz at that resolution until the watcher says it cooled down.
+    if [ -f "$THL" ]; then
+        read -r tid tprev _ < "$THL"
+        if [ "$tid" = "$id" ]; then
+            low="${tprev%:*}:60"
+            case "$have" in *" $low "*) want=$low ;; esac
+        else
+            rm -f "${THL:?}"
+        fi
+    fi
     # With DSC, never run a mode the monitor's decoder cannot take (it would stay black).
     tgt=${want:-$act}
     if [ -n "$tgt" ] && ! dsc_fits "$tgt" "$id"; then
@@ -429,7 +458,7 @@ on_connect() {
     fi
     prop=$(getprop $PROP); prop=${prop%:1}
     # Remembered so the next connect (also after a reboot) asks for it before any re-plug.
-    [ -n "$want" ] && echo "$want" > "$BASE/lastmode.$id"
+    [ -n "$want" ] && [ ! -f "$THL" ] && echo "$want" > "$BASE/lastmode.$id"
     if [ -n "$want" ]; then
         [ "$act" = "$want" ] && [ "$pref" = "$want" ] && { [ "$prop" = "$want" ] || setprop $PROP "$want:1"; return; }
         log "$id: cable $act, DeX ${pref:-none}, wanted $want"
@@ -1084,6 +1113,57 @@ confirm_cmd() {
     esac
 }
 
+# ---- Heat: optional automatic 60 Hz while the phone is hot -------------------------------------
+# Samsung's thermal service caps the GPU (kgsl thermal_pwrlevel; level 8 = 646 of 1300 MHz) and the
+# CPU when its skin estimate gets high; at 5120x2160 apps then fall to ~50 fps on a 110 Hz monitor.
+# With "thermal_fallback" on, the watcher (every 30 s) lowers the monitor to 60 Hz at the same
+# resolution when the GPU is held back hard (level >= 6, 826 MHz) or the thermal status is critical
+# (>= 4) twice in a row, and goes back to the saved mode after 3 cool checks (level <= 2, status
+# <= 2) and at least 3 minutes. The saved profile is not touched. $THL = "<id> <mode before> <since>".
+THL=$BASE/thermal.lowered
+hot_n=0; cool_n=0
+
+thermal_guard() {
+    id=$(edid_id); [ -n "$id" ] || return
+    if [ "$(get_set thermal_fallback)" != 1 ]; then
+        [ -f "$THL" ] && thermal_back "switched off"
+        return
+    fi
+    pl=0; read -r pl 2>/dev/null < /sys/class/kgsl/kgsl-3d0/thermal_pwrlevel
+    st=$(dumpsys thermalservice 2>/dev/null | sed -n 's/^Thermal Status: \([0-9]*\).*/\1/p' | head -n 1)
+    st=${st:-0}
+    if [ ! -f "$THL" ]; then
+        if [ "$pl" -ge 6 ] || [ "$st" -ge 4 ]; then hot_n=$((hot_n + 1)); else hot_n=0; fi
+        [ "$hot_n" -ge 2 ] || return
+        act=$(active_mode); act=${act:+$(to_key "$act")}
+        [ -n "$act" ] && [ "${act##*:}" -gt 60 ] || return
+        low="${act%:*}:60"
+        case " $(offered)" in *" $low "*) ;; *) return ;; esac
+        echo "$id $act $(up_s)" > "$THL"; hot_n=0; cool_n=0
+        log "$id: phone hot (GPU level $pl, thermal status $st); $act -> $low until it cools down"
+        lock; apply_mode "$low" "$(ext_sf_id)"; unlock; pace
+    else
+        if [ "$pl" -le 2 ] && [ "$st" -le 2 ]; then cool_n=$((cool_n + 1)); else cool_n=0; fi
+        read -r _ _ t0 < "$THL"
+        [ "$cool_n" -ge 3 ] && [ $(($(up_s) - ${t0:-0})) -ge 180 ] && thermal_back "cooled down (GPU level $pl, thermal status $st)"
+    fi
+}
+
+thermal_back() {
+    read -r tid prev _ < "$THL"; rm -f "${THL:?}"; cool_n=0; hot_n=0
+    connected && [ "$tid" = "$(edid_id)" ] || return
+    log "$tid: $1; back to $prev"
+    lock; apply_mode "$prev" "$(ext_sf_id)"; unlock; pace
+}
+
+thermal_cmd() {
+    case "$1" in
+        on) put_set thermal_fallback 1; log "switch: 60 Hz while hot ON"; echo "ok=1" ;;
+        off) put_set thermal_fallback 0; log "switch: 60 Hz while hot OFF"; echo "ok=1" ;;
+        *) echo "error=use: thermal-fallback on|off" ;;
+    esac
+}
+
 # ---- Watcher ----------------------------------------------------------------------------------
 
 # Everything that follows a connect (also used when the watcher finds the state drifted).
@@ -1156,6 +1236,7 @@ watch() {
                 connect_steps
             elif [ "$prev" = connected ] && [ ! -f "$BASE/replug.busy" ]; then
                 guard_stop wake
+                [ -f "$THL" ] && rm -f "${THL:?}"
                 unpace
                 inner_restore
                 custom_on_disconnect
@@ -1182,6 +1263,7 @@ watch() {
                     sum=$(cksum < $CONN/edid 2>/dev/null)
                 fi
                 pacesetter_ok || { log "pacesetter lost; re-applying"; pace_now; }
+                thermal_guard
                 inner_apply
                 [ "$(get_set phone_guard)" = 1 ] && [ ! -f "$BASE/guard.pid" ] && guard_start
             fi
@@ -1200,6 +1282,7 @@ case "$1" in
     set) lock; set_mode "$2" "$3"; unlock ;;
     confirm) if [ "$2" = back ]; then lock; confirm_cmd back; unlock; else confirm_cmd; fi ;;
     revert-timer) revert_timer ;;
+    thermal-fallback) thermal_cmd "$2" ;;
     dsc) case "$2" in auto-*) dsc_cmd "$2" ;; *) lock; dsc_cmd "$2"; unlock ;; esac ;;
     reset) lock; reset_mode; unlock ;;
     pace) pace ;;
@@ -1212,10 +1295,10 @@ case "$1" in
     boot)
         # A fresh kernel has no custom EDID and no running guard.
         rm -f "$BASE/op.lock/pid"; rmdir "$BASE/op.lock" 2>/dev/null
-        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/thermal.lowered" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | confirm [back] | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | confirm [back] | watch | boot" ;;
 esac

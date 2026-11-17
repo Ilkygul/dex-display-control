@@ -21,7 +21,12 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   60 fps. The module hands the clock to the monitor (verified with testufo.com: 60 -> 120 fps).
 - **Live status page** (KernelSU WebUI): monitor name, refresh rate, the rate DeX runs at, measured
   frames per second, DeX desktop size, colour depth, **whole-phone power** (live and 30 s average),
-  DisplayPort link, bandwidth use and pixel clock. It only measures while it is open and visible.
+  **the phone screen's refresh rate and frames per second**, **temperatures and how far heat holds
+  the GPU and CPU back**, DisplayPort link, bandwidth use and pixel clock. It only measures while it
+  is open and visible.
+- **60 Hz while the phone is hot** (switch). When Samsung's heat protection holds the GPU back hard,
+  a fast monitor cannot get its fps anyway; the monitor then runs 60 Hz until the phone has cooled
+  down, and goes back to your choice by itself.
 - **Keep phone screen off while a monitor is connected** (switch). Keyboard, notifications and other
   events no longer wake the phone screen; only the side key, unplugging, a restart or an explicit
   command do. The switch is remembered and can always be turned off, also with no monitor attached.
@@ -63,7 +68,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.5.1.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.6.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -110,6 +115,7 @@ su -c "sh $M inner-hz 60"            # phone screen refresh while connected (or:
 su -c "sh $M extra on"               # experimental extra refresh rates for this monitor (or: off)
 su -c "sh $M dsc on"                 # experimental compression (DSC) for this monitor (or: off)
 su -c "sh $M dsc auto-on"            # check new monitors for DSC when they connect (or: auto-off)
+su -c "sh $M thermal-fallback on"    # 60 Hz while the phone is hot (or: off)
 su -c "sh $M confirm"                # keep a new experimental mode (confirm back: undo now)
 ```
 

@@ -81,6 +81,15 @@
   <div class="hint" id="legend" style="margin-top:8px"></div>
   <button class="wide" id="resetBtn">Use the monitor's default</button>
   <div class="msg" id="msg"></div>
+  <div class="sep"></div>
+  <div class="row">
+    <div>
+      <div>Lower to 60 Hz while the phone is hot</div>
+      <div class="hint">When Samsung's heat protection holds the GPU back hard, apps cannot keep up with a fast monitor anyway (about 50 fps at 5120 × 2160). Then the monitor goes to 60 Hz at the same resolution for smooth 60 fps, and back to your choice once the phone has cooled down for a few minutes. Checked every 30 s; your saved choice is not changed.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="thermSw"><span class="slider"></span></label>
+  </div>
+  <div class="hint" id="thermState" style="margin-top:6px"></div>
 </div>
 
 <div class="card">
@@ -138,7 +147,8 @@
 <script>
   const SCRIPT = "/data/adb/modules/fold-display/display.sh";
   const INNER_RATES = [120, 80, 60, 48, 30, 20];
-  let cb = 0, busy = false, last = null, prevSample = null, fps = null, dexMismatch = false, pw = [];
+  let cb = 0, busy = false, last = null, prevSample = null, fps = null, dexMismatch = false, pw = [], prevInner = null, innerFps = null;
+  const TH_WORDS = ["normal", "light", "moderate", "severe", "critical", "emergency", "shutdown"];
 
   function run(cmd) {
     return new Promise((resolve) => {
@@ -150,12 +160,13 @@
   }
 
   function parse(out) {
-    const s = { modes: [], profiles: {}, extraOn: [], dscMon: {}, mi: {} };
+    const s = { modes: [], profiles: {}, extraOn: [], dscMon: {}, mi: {}, temps: {} };
     for (const line of out.split("\n")) {
       const i = line.indexOf("="); if (i < 0) continue;
       const k = line.slice(0, i), v = line.slice(i + 1).trim();
       if (k === "mode") { if (!s.modes.includes(v)) s.modes.push(v); }
       else if (k === "extra_on") s.extraOn.push(v);
+      else if (k.startsWith("t_")) { const p = v.split(":"), n = k.slice(2), t = parseFloat(p[0]); if (!s.temps[n] || t > s.temps[n].v) s.temps[n] = { v: t, st: +p[1] }; }
       else if (k === "dsc_mon") { const j = v.indexOf(":"); s.dscMon[v.slice(0, j)] = v.slice(j + 1); }
       else if (k === "mi") { const p = v.split(":"); const key = p.slice(0, 3).join(":"); if (!(key in s.mi)) s.mi[key] = { bits: +p[3] / 3, dsc: p[4] === "dsc", over: p[5] === "1" }; }
       else if (k === "profile") { const j = v.indexOf(":"); s.profiles[v.slice(0, j)] = v.slice(j + 1); }
@@ -266,8 +277,15 @@
       : "Keep " + (s.current ? fmtKey(keyOf(s.current)) : "this mode") + "? Going back to " + fmtKey(s.confirm_prev) + " in " + s.confirm_left + " s.";
   }
 
+  function renderTherm(s) {
+    el("thermSw").checked = s.thermal_fallback === "1"; el("thermSw").disabled = busy;
+    el("thermState").innerHTML = s.thermal_lowered
+      ? '<span class="warn">Lowered to 60 Hz because the phone is hot; back to ' + fmtKey(s.thermal_lowered) + " when it has cooled down.</span>"
+      : (s.thermal_fallback === "1" ? "On." : "Off.");
+  }
+
   function renderExp(s) {
-    renderDsc(s); renderConfirm(s);
+    renderDsc(s); renderConfirm(s); renderTherm(s);
     const btn = el("expBtn"), st = el("expState");
     const on = s.extraOn.includes(s.id), keys = Object.keys(s.extraBpp);
     btn.textContent = on ? "Remove extra refresh rates" : "Add extra refresh rates for this monitor";
@@ -289,7 +307,7 @@
     const modes = el("modes"), reset = el("resetBtn");
     if (s.connected !== "1") {
       el("name").textContent = "No monitor connected"; el("hz").textContent = "–"; el("res").textContent = "";
-      el("facts").innerHTML = powerFact(s); el("tech").innerHTML = ""; el("fixBtn").style.display = "none";
+      el("facts").innerHTML = powerFact(s) + phoneFacts(s); el("tech").innerHTML = ""; el("fixBtn").style.display = "none";
       modes.className = "empty"; modes.textContent = "Connect a monitor over USB-C."; reset.disabled = true; return;
     }
     el("name").textContent = s.name || s.edidName || "Unknown monitor";
@@ -330,6 +348,7 @@
     }
     if (s.density) t += fact("DeX density", s.density + " dpi");
     t += fact("Monitor id", s.id + (s.variant ? " · variant " + s.variant : ""));
+    f += phoneFacts(s);
     if (pw.length) {
       f += powerFact(s);
       t += fact("System current", Math.round(parseFloat(s.sys_ma)) + " mA at " + nf(parseFloat(s.sys_mv) / 1000, 2) + " V (fuel gauge average " + Math.round(parseFloat(s.sys_ma_avg)) + " mA)");
@@ -376,6 +395,30 @@
     while (pw.length && t - pw[0].t > 30) pw.shift();
   }
 
+  function phoneFacts(s) {
+    let f = "";
+    const setHz = s.inner_hz ? s.inner_hz + " Hz while a monitor is connected" : "your normal refresh setting";
+    if (s.phone === "on") {
+      const r = s.inner_rate ? Math.round(parseFloat(s.inner_rate)) + " Hz" : "on";
+      f += fact("Phone screen", r + (innerFps !== null ? " · " + nf(innerFps, 0) + " fps" : ""), ' <span class="label">(' + setHz + ")</span>");
+    } else {
+      f += fact("Phone screen", "off", s.phone_guard === "1" ? ' <span class="label">(kept off while a monitor is connected)</span>' : "");
+    }
+    const T = s.temps, parts = [];
+    if (T.SKIN) parts.push("skin " + nf(T.SKIN.v, 1) + " °C");
+    if (T.AP) parts.push("chip " + nf(T.AP.v, 1) + " °C");
+    if (T.BAT) parts.push("battery " + nf(T.BAT.v, 1) + " °C");
+    const st = parseInt(s.th_status, 10);
+    if (parts.length) f += fact("Temperature", parts.join(" · "), !isNaN(st) ? (st >= 3 ? warn("(" + TH_WORDS[st] + ")") : ' <span class="label">(' + TH_WORDS[st] + ")</span>") : "");
+    const gm = parseFloat(s.gpu_max), gt = parseFloat(s.gpu_top), cm = parseFloat(s.cpu_max), ct = parseFloat(s.cpu_top);
+    if (gm && gt) {
+      const gl = gm < gt * 0.97, cl = cm && ct && cm < ct * 0.97, hard = gm < gt * 0.7;
+      const txt = "GPU up to " + Math.round(gm / 1e6) + " of " + Math.round(gt / 1e6) + " MHz" + (cm && ct ? " · CPU up to " + nf(cm / 1e6, 2) + " of " + nf(ct / 1e6, 2) + " GHz" : "");
+      f += fact("Performance", txt, gl || cl ? warn(hard ? "(phone hot: held back hard, fast modes will not reach their fps)" : "(held back a little by heat)") : ' <span class="label">(full speed)</span>');
+    }
+    return f;
+  }
+
   function powerFact(s) {
     if (!pw.length) return "";
     const now = pw[pw.length - 1].w, avg = pw.reduce((a, x) => a + x.w, 0) / pw.length, span = Math.round(pw[pw.length - 1].t - pw[0].t);
@@ -385,6 +428,11 @@
 
   function sample(s) {
     samplePower(s);
+    const ti = parseFloat(s.t), fi = parseInt(s.inner_frames, 10);
+    if (s.phone === "on" && !isNaN(ti) && !isNaN(fi)) {
+      if (prevInner && ti > prevInner.t && fi >= prevInner.f) innerFps = (fi - prevInner.f) / (ti - prevInner.t);
+      prevInner = { t: ti, f: fi };
+    } else { prevInner = null; innerFps = null; }
     const t = parseFloat(s.t), f = parseInt(s.frames, 10);
     if (!isNaN(t) && !isNaN(f)) {
       if (prevSample && t > prevSample.t && f >= prevSample.f) fps = (f - prevSample.f) / (t - prevSample.t);
@@ -464,6 +512,14 @@
     refresh();
   };
 
+  el("thermSw").onchange = async (e) => {
+    busy = true;
+    await run("sh " + SCRIPT + " thermal-fallback " + (e.target.checked ? "on" : "off"));
+    busy = false;
+    setMsg("msg", e.target.checked ? "On: 60 Hz while the phone is hot, back when it has cooled down." : "Off: the monitor keeps your chosen rate, also when the phone is hot.", "ok");
+    refresh();
+  };
+
   el("dscAutoSw").onchange = async (e) => {
     busy = true;
     await run("sh " + SCRIPT + " dsc " + (e.target.checked ? "auto-on" : "auto-off"));
@@ -497,7 +553,7 @@
     while (!document.hidden) { await refresh(); await new Promise((ok) => setTimeout(ok, 1000)); }
     polling = false;
   }
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; pw = []; loop(); } });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; pw = []; prevInner = null; innerFps = null; loop(); } });
   loop();
 </script>
 </body>
