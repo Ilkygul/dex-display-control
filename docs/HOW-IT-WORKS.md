@@ -170,6 +170,21 @@ and their cooling devices (which protect the chip itself) are not touched, and t
 battery protection keeps working. With the override at full speed, the 60 Hz heat fallback only reacts
 to a held-back GPU, not to the thermal status alone.
 
+## Monitors that switch mode by reconnecting
+
+The XREAL One Pro switches to ultrawide (and back) by disconnecting for a few seconds and coming
+back with a different EDID. The watcher clears any custom EDID at once on a disconnect, but waits
+8 s before undoing the rest (temperature override, phone screen refresh, pacesetter, phone-screen
+guard). A monitor back within that time is treated as a mode switch: its new mode list is a
+separate variant with its own saved choice.
+
+## Phone screen refresh
+
+Android's `peak_refresh_rate` / `min_refresh_rate` are global votes in DisplayModeDirector: with
+the phone screen set to 30 Hz that way, apps on the monitor also stayed at 60 fps. The module sets a
+user preferred mode on display 0 instead (`cmd display set-user-preferred-display-mode W H HZ 0`),
+which only affects the phone screen, and clears it on unplug.
+
 ## One action at a time
 
 Commands, the confirmation timer and the watcher's connect handling all reconnect the monitor. A

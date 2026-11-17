@@ -22,8 +22,8 @@ F=/sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit
 # Phone screen refresh rate: the user's own values.
 if [ -f "$B/refresh.saved" ]; then
     read -r mn pk < "$B/refresh.saved"
-    case "$mn" in null|"") settings delete system min_refresh_rate ;; *) settings put system min_refresh_rate "$mn" ;; esac
-    case "$pk" in null|"") settings delete system peak_refresh_rate ;; *) settings put system peak_refresh_rate "$pk" ;; esac
+    case "$mn" in null|"") settings delete system min_refresh_rate ;; [0-9]*) settings put system min_refresh_rate "$mn" ;; esac </dev/null >/dev/null 2>&1
+    case "$pk" in null|"") settings delete system peak_refresh_rate ;; [0-9]*) settings put system peak_refresh_rate "$pk" ;; esac </dev/null >/dev/null 2>&1
 fi
 
 # Composer mode override, app frame clock, custom EDID.

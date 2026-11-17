@@ -72,6 +72,10 @@ Internet on DeX.
 | Dell U3225QE with DSC (automatic check) | Dell U3225QE | DSC found (limit 340); its own 4K 120 Hz flickered and was reverted by the 30 s check (remembered as not working); extra rates 70-115 Hz at 4K added automatically; own rate 4K 100 Hz added from the page |
 | EDID size limit | Dell U3225QE | The kernel keeps only the first 512 bytes (4 blocks) of a custom EDID; a fifth block read as zeros. Extra rates now fit within 4 blocks (5 rates when the monitor already has 2 extension blocks) |
 | CPU load per core group in the live panel | - | From /proc/stat per policy's related_cpus, two readings |
+| XREAL ultrawide on/off from the glasses' menu | XREAL One Pro | The glasses disconnect for about 3 s and come back with a new EDID (ultrawide 3840x1080 at 60 Hz); handled as a mode switch: settings kept, DeX resized to 3840x1080, saved 1080p 120 Hz not forced on it; back to normal: 1080p 120 Hz restored by itself |
+| Phone screen 30 Hz via Android's global peak/min_refresh_rate | XREAL One Pro | Apps on the XREAL (testufo) dropped to 60 fps: those settings are global votes. Replaced by a preferred mode on display 0 only: phone screen 60 Hz, testufo on the XREAL 120 fps |
+| `settings` calls from the watcher | - | Failed ("Failed transaction") because the watcher's stderr was a file under /data/adb, which system_server may not receive; the error text was even saved as the user's value. Now through /dev/null and checked |
+| Unplug after the fixes | XREAL One Pro | "monitor unplugged" 8 s later; temperature override handed back, pacesetter back to the phone, phone screen preferred mode cleared, global refresh untouched |
 | Status call with heat, phone-screen fps and power | - | 0.09 s (dumpsys thermalservice takes about 10 ms) |
 | Power (whole phone on battery via slate mode, still DeX screen, 50 s average) | LG 40U990A | 60 Hz 2.03 W; 60 Hz DSC 2.15 W; 80 Hz 6-bit 2.37 W; 110 Hz DSC 3.04 W |
 | Live power from the fuel gauge (system current `power_now` x `voltage_sys`, 20 s average) | LG 40U990A | 110 Hz DSC 700 mA x 4.53 V = 3.17 W, 60 Hz DSC 519 mA = 2.35 W, back to 110 Hz 698 mA: follows the change, about 5-10 % above the battery-side result |
@@ -100,8 +104,6 @@ Internet on DeX.
   the LG. The 4-slice assumption (two DSC encoders, two slices each) comes from the LG at 5120 wide.
 - The extra rates on the Dell U3225QE and the XREAL glasses (the XREAL already offers its 120 Hz
   maximum, so nothing would be added).
-- XREAL "ultrawide" mode (a monitor that changes its own EDID without unplugging): handled in code
-  (EDID checksum watch, per-variant profiles), not yet tried.
 - The soft-reboot composer restart as part of the module (it was tested as a stand-alone
   `/data/adb/post-fs-data.d` script with the same code).
 - Any other phone, chip, One UI version, or Magisk instead of KernelSU.

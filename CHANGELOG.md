@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.11.0 (2026-11-17)
+
+- Phone screen refresh while connected is now per screen (preferred mode on display 0, 60 or
+  120 Hz) instead of Android's global peak/min refresh settings, which also held apps on the
+  monitor at 60 fps. Older saved values are restored once.
+- Monitors that switch mode by reconnecting (XREAL ultrawide, input or menu changes): a disconnect
+  only counts as an unplug after 8 s; within that time all settings stay.
+- Fix: `settings` calls from the watcher failed (its log file as stderr is refused by
+  system_server) and an error text could be saved as the user's value; now through /dev/null and
+  checked.
+- Fix: a second temperature override process could keep running after a restart; background
+  processes now stop when they are not the current one.
+
 ## v2.10.0 (2026-11-17)
 
 - Your own refresh rates: any resolution, any rate (`extra-add` / `extra-del`, form on the page).

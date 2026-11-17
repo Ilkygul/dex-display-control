@@ -167,7 +167,7 @@
   <div class="hint" id="phoneState" style="margin-top:8px"></div>
   <div class="sep"></div>
   <div>Phone screen refresh rate while a monitor is connected</div>
-  <div class="hint" style="margin:2px 0 10px">Used while a monitor is connected; restored when you unplug.</div>
+  <div class="hint" style="margin:2px 0 10px">Phone screen only (the monitor is not affected); restored when you unplug.</div>
   <div class="chips" id="innerChips"></div>
   <div class="msg" id="phoneMsg"></div>
 </div>
@@ -215,7 +215,7 @@
 
 <script>
   const SCRIPT = "/data/adb/modules/fold-display/display.sh";
-  const INNER_RATES = [120, 80, 60, 48, 30, 20];
+  const INNER_RATES = [120, 60];
   let cb = 0, busy = false, last = null, prevSample = null, fps = null, dexMismatch = false, pw = [], prevInner = null, innerFps = null;
   const TH_WORDS = ["normal", "light", "moderate", "severe", "critical", "emergency", "shutdown"];
 

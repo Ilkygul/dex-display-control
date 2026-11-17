@@ -609,35 +609,61 @@ guard_cmd() {
 
 # ---- Phone screen refresh rate while a monitor is connected ---------------------------------
 
-# Uses system min/peak_refresh_rate. The user's values (also those set by refresh-rate apps) are
-# saved on connect and put back on disconnect; ours are re-applied if something changes them meanwhile.
+# `settings` passes our stdin/stdout/stderr to system_server; a stderr that is a file under
+# /data/adb (the watcher's log) is refused there ("Failed transaction"), so every call goes through
+# /dev/null and its output is checked: only a number or "null" counts as a value.
+sset() { settings "$@" </dev/null 2>/dev/null; }
+sval() { v=$(sset get system "$1"); case "$v" in null|[0-9]*) echo "$v" ;; *) echo "?" ;; esac; }
+
+# Per screen, not global: Android's peak/min_refresh_rate settings are global votes that also held
+# apps on the monitor at 60 fps, so the phone screen gets a preferred mode on display 0 only
+# (DisplayManager), 60 or 120 Hz. The previous preferred mode of display 0 is saved and put back
+# on unplug. (DeX itself keeps the phone screen at about 60 Hz while it runs.)
+inner_size() { dumpsys display 2>/dev/null | grep -m1 -F 'mBaseDisplayInfo=DisplayInfo{"Built-in Screen"' | sed -n 's/.*real \([0-9]*\) x \([0-9]*\).*/\1 \2/p'; }
+
 inner_apply() {
     hz=$(get_set inner_hz)
-    case "$hz" in 120|80|60|48|30|20) ;; *) inner_restore; return 0 ;; esac
+    case "$hz" in 120|60) ;; *) inner_restore; return 0 ;; esac
     connected || return 0
+    set -- $(inner_size); [ -n "$2" ] || return 0
+    cur=$(cmd display get-user-preferred-display-mode 0 </dev/null 2>/dev/null); cur=${cur#*: }
     if [ ! -f "$BASE/refresh.saved" ]; then
-        echo "$(settings get system min_refresh_rate) $(settings get system peak_refresh_rate)" > "$BASE/refresh.saved"
+        # Never save our own value as the user's.
+        case "$cur" in "$1 $2 $hz"*) cur="-1 -1 0.0" ;; esac
+        echo "pref $cur" > "$BASE/refresh.saved"
     fi
-    [ "$(settings get system peak_refresh_rate)" = "$hz.0" ] && [ "$(settings get system min_refresh_rate)" = "$hz.0" ] && return 0
-    settings put system peak_refresh_rate "$hz.0"
-    settings put system min_refresh_rate "$hz.0"
-    log "phone screen refresh -> $hz Hz"
+    case "$cur" in "$1 $2 $hz"*) return 0 ;; esac
+    cmd display set-user-preferred-display-mode "$1" "$2" "$hz" 0 </dev/null >/dev/null 2>&1
+    log "phone screen -> $hz Hz (display 0 only)"
 }
 
 inner_restore() {
     [ -f "$BASE/refresh.saved" ] || return 0
-    read -r mn pk < "$BASE/refresh.saved"
-    case "$mn" in null|"") settings delete system min_refresh_rate >/dev/null 2>&1 ;; *) settings put system min_refresh_rate "$mn" ;; esac
-    case "$pk" in null|"") settings delete system peak_refresh_rate >/dev/null 2>&1 ;; *) settings put system peak_refresh_rate "$pk" ;; esac
+    read -r k w h z _ < "$BASE/refresh.saved"
+    if [ "$k" = pref ]; then
+        if [ "${w:--1}" -gt 0 ] 2>/dev/null; then
+            cmd display set-user-preferred-display-mode "$w" "$h" "${z%.*}" 0 </dev/null >/dev/null 2>&1
+        else
+            cmd display clear-user-preferred-display-mode 0 </dev/null >/dev/null 2>&1
+        fi
+        log "phone screen preferred mode restored (${w:-none})"
+    else
+        # Saved by an older version (global settings): put those back, values only.
+        mn=$k; pk=$w
+        case "$mn" in null) sset delete system min_refresh_rate ;; [0-9]*) sset put system min_refresh_rate "$mn" ;; esac
+        case "$pk" in null) sset delete system peak_refresh_rate ;; [0-9]*) sset put system peak_refresh_rate "$pk" ;; esac
+        log "phone screen refresh restored (old global settings: min $mn, peak $pk)"
+    fi
     rm -f "$BASE/refresh.saved"
-    log "phone screen refresh restored (min $mn, peak $pk)"
 }
+
+inner_verify() { rm -f "$BASE/refresh.check"; }
 
 inner_cmd() {
     case "$1" in
-        120|80|60|48|30|20) put_set inner_hz "$1"; inner_apply; echo "ok=1" ;;
+        120|60) put_set inner_hz "$1"; inner_apply; echo "ok=1" ;;
         off) put_set inner_hz ""; inner_restore; echo "ok=1" ;;
-        *) echo "error=use: inner-hz 120|80|60|48|30|20|off" ;;
+        *) echo "error=use: inner-hz 120|60|off" ;;
     esac
 }
 
@@ -1445,7 +1471,8 @@ desk_run() {
     echo "on full speed" > "$BASE/desk.state"
     lb=$(get_set desk_bat); la=$(get_set desk_ap); ls=$(get_set desk_skin); [ "$ls" = 999 ] && ls=ignored
     log "temperature override on (Samsung's limits overridden; back at battery ${lb:-41} C, board ${la:-80} C, skin ${ls:-56})"
-    while [ -f "$BASE/desk.run" ]; do
+    # Only the copy named in desk.pid keeps running (a restart must never leave two).
+    while [ -f "$BASE/desk.run" ] && { dp=""; read -r dp 2>/dev/null < "$pidf"; [ "$dp" = $$ ]; }; do
         if [ $((t % 5)) = 0 ]; then
             # Limits can be tuned in the settings file (desk_bat, desk_ap, desk_skin); the "cool
             # again" levels stay 3-8 degrees lower.
@@ -1496,7 +1523,8 @@ desk_run() {
     echo "$w_g" > $G
     for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
     [ "$mode" = on ] && desk_cpu_unblock
-    rm -f "$BASE/desk.state" "$pidf"
+    dp=""; read -r dp 2>/dev/null < "$pidf"
+    [ "$dp" = $$ ] && rm -f "$BASE/desk.state" "$pidf"
     log "temperature override off ($n_over limits put back to full speed)"
 }
 
@@ -1588,7 +1616,7 @@ watch() {
         exit 0
     fi
     echo $$ > "$pidf"
-    prev=""; sum=""; tick=0
+    prev=""; sum=""; tick=0; gone=0; gone_t=0
     sfp=$(pidof surfaceflinger)
     # Started without a monitor (boot, or after a crash): nothing of ours may stay applied.
     connected || { inner_restore; custom_clear; }
@@ -1597,22 +1625,34 @@ watch() {
     # A software re-plug interrupted halfway would leave the DP output off.
     [ -f "$BASE/extdisp.off" ] && { echo "ExtDispOff,0" > $XD 2>/dev/null; rm -f "$BASE/extdisp.off"; log "DP output switched back on after an interrupted re-plug"; }
     while :; do
+        # Only the watcher named in watch.pid keeps running.
+        wp=""; read -r wp 2>/dev/null < "$pidf"; [ "$wp" = $$ ] || exit 0
         read -r st < $CONN/status 2>/dev/null
         if [ "$st" != "$prev" ]; then
             if [ "$st" = connected ]; then
+                [ "$gone" = 1 ] && log "monitor back after $(($(up_s) - gone_t)) s (mode switch or re-plug); settings kept"
+                gone=0
                 sum=$(cksum < $CONN/edid 2>/dev/null)
                 wait_sf >/dev/null
                 connect_steps
             elif [ "$prev" = connected ] && [ ! -f "$BASE/replug.busy" ]; then
-                guard_stop wake
-                desk_stop
-                [ -f "$THL" ] && rm -f "${THL:?}"
-                unpace
-                inner_restore
+                # Our custom EDID goes at once (it must never reach another monitor). The rest waits:
+                # monitors that switch mode by reconnecting (XREAL ultrawide, input or menu changes)
+                # come back within seconds, and then nothing needs undoing.
                 custom_on_disconnect
+                gone_t=$(up_s); gone=1
             fi
             read -r prev < $CONN/status 2>/dev/null
             sum=$(cksum < $CONN/edid 2>/dev/null)
+        elif [ "$st" != connected ] && [ "$gone" = 1 ] && [ $(($(up_s) - gone_t)) -ge 8 ]; then
+            # Still gone after 8 s: a real unplug.
+            gone=0
+            log "monitor unplugged"
+            guard_stop wake
+            desk_stop
+            [ -f "$THL" ] && rm -f "${THL:?}"
+            unpace
+            inner_restore
         elif [ "$st" = connected ]; then
             # Same cable, new EDID: the monitor switched mode itself (XREAL ultrawide).
             s2=$(cksum < $CONN/edid 2>/dev/null)
@@ -1654,6 +1694,7 @@ case "$1" in
     confirm) if [ "$2" = back ]; then lock; confirm_cmd back; unlock; else confirm_cmd; fi ;;
     revert-timer) revert_timer ;;
     thermal-fallback) thermal_cmd "$2" ;;
+    inner-verify) inner_verify ;;
     dex-recover) dex_recover_cmd "$2" ;;
     extra-add) lock; xrate_cmd add "$2"; unlock ;;
     extra-del) lock; xrate_cmd del "$2"; unlock ;;

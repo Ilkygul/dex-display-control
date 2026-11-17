@@ -44,8 +44,12 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
 - **Keep phone screen off while a monitor is connected** (switch). Keyboard, notifications and other
   events no longer wake the phone screen; only the side key, unplugging, a restart or an explicit
   command do. The switch is remembered and can always be turned off, also with no monitor attached.
-- **Phone screen refresh rate during DeX** (120, 80, 60, 48, 30 or 20 Hz), restored when you unplug.
-  Your own refresh rate settings (including ones set by other apps) are saved and put back.
+- **Phone screen refresh rate while a monitor is connected** (60 or 120 Hz), for the phone screen
+  only (a preferred mode on display 0), restored when you unplug. Android's global refresh settings
+  are not used: they also held apps on the monitor at 60 fps.
+- **Mode switches by reconnecting are handled:** monitors that switch mode by disconnecting for a
+  moment (XREAL ultrawide, input or menu changes) keep all settings if they are back within 8 s;
+  each mode is its own variant with its own saved choice.
 - **Experimental: extra refresh rates.** Adds faster versions of the monitor's own native mode, as
   far as the phone's link allows (see [Limits](#limits)): for example **5120x2160 at 70, 75 and
   80 Hz** on an LG 40U990A, which offers 60 Hz at most over this phone. Rates that do not fit at
@@ -80,7 +84,7 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
 | Android / One UI | Android 17, One UI 9.0 (build F971BXXU3AZI5, security patch 2026-09-05) |
 | Kernel | 6.12.58 GKI (android16-6.12) |
 | Root | KernelSU samsung-v2.2 (temporary "jailbreak" root loaded by DFRoot 4.7), Vector/NeoZygisk present |
-| Monitors | XREAL One Pro glasses (USB-C); Dell U3225QE 32" 4K 120 Hz (USB-C/Thunderbolt input); LG UltraFine 40U990A 40" 5K2K (Thunderbolt 5 input). All over DisplayPort Alt Mode |
+| Monitors | XREAL One Pro glasses (USB-C, normal and ultrawide); Dell U3225QE 32" 4K 120 Hz (USB-C/Thunderbolt input); LG UltraFine 40U990A 40" 5K2K (Thunderbolt 5 input). All over DisplayPort Alt Mode |
 
 Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was found on the way:
 [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md). What the modes cost in power and how it was measured:
@@ -88,7 +92,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.10.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.11.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -131,7 +135,7 @@ su -c "sh $M reset"                  # back to the monitor's own default
 su -c "sh $M phone on"               # wake the phone screen on purpose
 su -c "sh $M phone off"              # phone screen off, DeX keeps running
 su -c "sh $M phone-guard off"        # turn the keep-off switch off (escape route)
-su -c "sh $M inner-hz 60"            # phone screen refresh while connected (or: off)
+su -c "sh $M inner-hz 60"            # phone screen refresh while connected: 60|120 (or: off)
 su -c "sh $M extra on"               # experimental extra refresh rates for this monitor (or: off)
 su -c "sh $M dsc on"                 # experimental compression (DSC) for this monitor (or: off)
 su -c "sh $M dsc auto-on"            # check new monitors for DSC when they connect (or: auto-off)
