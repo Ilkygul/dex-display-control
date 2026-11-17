@@ -293,7 +293,7 @@ status() {
     [ -f "$BASE/guard.armed" ] && echo "armed=1" || echo "armed=0"
     [ -f "$BASE/custom.active" ] && { read -r ca < "$BASE/custom.active"; echo "custom=active:$ca"; }
     [ -f "$BASE/extra.modes" ] && { read -r xm < "$BASE/extra.modes"; echo "extra_modes=$xm"; }
-    [ -d "$EXTRA" ] && for f in "$EXTRA"/*; do [ -f "$f" ] && echo "extra_on=${f##*/}"; done
+    [ -d "$EXTRA" ] && for f in "$EXTRA"/*; do [ -f "$f" ] && case "$f" in *.off) ;; *) echo "extra_on=${f##*/}" ;; esac; done
     echo "dsc_auto=$(get_set dsc_auto)"
     [ -d "$DSCD" ] && for f in "$DSCD"/*; do [ -f "$f" ] && { read -r v < "$f"; echo "dsc_mon=${f##*/}:$v"; }; done
     [ -f "$BASE/modeinfo" ] && while read -r v; do echo "mi=$v"; done < "$BASE/modeinfo"
@@ -312,10 +312,18 @@ status() {
     read -r v _ 2>/dev/null < $G/gpu_available_frequencies && echo "gpu_top=$v"
     read -r v _ 2>/dev/null < $G/gpu_busy_percentage && echo "gpu_busy=$v"
     read -r v 2>/dev/null < /sys/kernel/gpu/gpu_max_clock && echo "gpu_smax=$v"
-    # Per CPU core group: current : maximum allowed now : hardware maximum (kHz).
+    # Per CPU core group: current : maximum allowed now : hardware maximum (kHz), and the group's
+    # busy and total time from /proc/stat (two readings give the load).
     for c in /sys/devices/system/cpu/cpufreq/policy*; do
         read -r a1 2>/dev/null < $c/scaling_cur_freq; read -r a2 2>/dev/null < $c/scaling_max_freq; read -r a3 2>/dev/null < $c/cpuinfo_max_freq
-        echo "cpu_${c##*/}=$a1:$a2:$a3"
+        read -r rc 2>/dev/null < $c/related_cpus
+        bz=0; tt=0
+        while read -r cn us ni sy id io irq sirq st _; do
+            case "$cn" in cpu[0-9]*) ;; *) continue ;; esac
+            case " $rc " in *" ${cn#cpu} "*) ;; *) continue ;; esac
+            b1=$((us + ni + sy + irq + sirq + st)); bz=$((bz + b1)); tt=$((tt + b1 + id + io))
+        done < /proc/stat
+        echo "cpu_${c##*/}=$a1:$a2:$a3:$bz:$tt"
     done
     for c in /sys/devices/system/cpu/cpufreq/policy*; do pol=$c; done
     read -r v 2>/dev/null < $pol/scaling_max_freq && echo "cpu_max=$v"
@@ -367,6 +375,8 @@ EOF
     fi
     echo "connected=1"
     echo "edid=$(edid_hex)"
+    bid=$(edid_id); [ -f "$BASE/bad/$bid" ] && echo "bad=$(tr '\n' ' ' < "$BASE/bad/$bid")"
+    [ -s "$XR/$bid" ] && echo "own=$(tr '\n' ' ' < "$XR/$bid")"
     echo "sfid=$sfid"
     printf '%s\n' "$b" | sed -n \
         -e 's/.*activeMode={id=[0-9]*, hwcId=[0-9]*, resolution=\([0-9x]*\), vsyncRate=\([0-9.]*\) Hz.*/current=\1@\2/p' \
@@ -420,7 +430,6 @@ set_mode() {
         *" $key "*) ;;
         *) echo "error=This monitor does not offer $key"; return 1 ;;
     esac
-    dsc_fits "$key" "$id" || { echo "error=Too fast for this monitor's DSC decoder ($(dsc_peak "$id") Mpixel/s per slice)"; return 1; }
     var=$(variant)
     prev=$(active_mode); prev=${prev:+$(to_key "$prev")}
     arm=0
@@ -488,11 +497,11 @@ on_connect() {
             rm -f "${THL:?}"
         fi
     fi
-    # With DSC, never run a mode the monitor's decoder cannot take (it would stay black).
+    # On connect, never start in a mode that failed on this monitor before (it would stay black).
     tgt=${want:-$act}
-    if [ -n "$tgt" ] && ! dsc_fits "$tgt" "$id"; then
+    if [ -n "$tgt" ] && mode_bad "$tgt" "$id"; then
         nb=$(dsc_best "${tgt%:*}" "$id")
-        log "$id: $tgt is too fast for the DSC decoder; using ${nb:-the default}"
+        log "$id: $tgt did not work before; using ${nb:-the default}"
         want=$nb
     fi
     prop=$(getprop $PROP); prop=${prop%:1}
@@ -742,6 +751,7 @@ custom_on_connect() {
 # monitor's own data stays as it is. Tested: LG 40U990A 5120x2160 at 70/75/80 Hz (18 bpp), 2026-11-17.
 # Remembered per monitor in $EXTRA/<id> and applied again on every connect.
 EXTRA=$BASE/extra
+XR=$BASE/xrates        # your own rates per monitor: XR/<id>, one W:H:HZ per line
 HZ_STEPS="70 75 80 85 90 100 105 110 115 120 144 165"
 
 # Link payload as the kernel counts it (kHz x bits): link rate x lanes x 8.
@@ -790,6 +800,7 @@ consider() {
     hz10=$((pk * 10 / (fr / 1000)))
     [ "$hz10" -ge 500 ] || return
     seen="$seen $ha:$va:$(((hz10 + 5) / 10))"
+    alltim="$alltim $ha,$hb,$hfp,$hsw,$va,$vb,$vfp,$vsw,$hp,$vp,$hz10"
     ar=$((ha * va)); sc=$((hz10 > 600 ? hz10 - 600 : 600 - hz10))
     if [ "$ar" -gt "$best_ar" ] || { [ "$ar" -eq "$best_ar" ] && [ "$sc" -lt "$best_sc" ]; }; then
         best_ar=$ar; best_sc=$sc; best="$ha $hb $hfp $hsw $va $vb $vfp $vsw $hp $vp"; best_hz=$(((hz10 + 5) / 10))
@@ -797,6 +808,15 @@ consider() {
 }
 
 cks() { s=0; i=0; while [ "$i" -lt "${#1}" ]; do s=$((s + 0x${1:$i:2})); i=$((i + 2)); done; printf '%02x' $(((256 - s % 256) % 256)); }
+
+# One DisplayID 1.2 extension block (128 bytes, hex) with $2 type I timings given as hex in $1.
+did_block() {
+    nb=$(($2 * 20))
+    sec="12$(printf '%02x' $((nb + 3)))0300"0300$(printf '%02x' $nb)$1
+    blk="70$sec$(cks "$sec")"
+    while [ "${#blk}" -lt 254 ]; do blk="${blk}00"; done
+    echo "$blk$(cks "$blk")"
+}
 
 # Writes $BASE/extra.hex (the new EDID) and $BASE/extra.modes ("W:H:HZ:BPP ..."); 1 if nothing fits.
 # mksh arithmetic is 32-bit, hence the divisions before multiplying.
@@ -806,8 +826,8 @@ make_extra() {
     [ -n "$h" ] || h=$(edid_hex)
     [ "${#h}" -ge 256 ] || return 1
     by n 126
-    [ "$n" -le 6 ] && [ "${#h}" -eq $(((n + 1) * 256)) ] || return 1
-    best=""; best_ar=0; best_sc=99999; seen=""
+    [ "$n" -le 5 ] && [ "${#h}" -eq $(((n + 1) * 256)) ] || return 1
+    best=""; best_ar=0; best_sc=99999; seen=""; alltim=""
     for o in 54 72 90 108; do dtd_at $o && consider; done
     e=1
     while [ "$e" -le "$n" ]; do
@@ -832,6 +852,7 @@ make_extra() {
     set -- $best
     ha=$1; hb=$2; hfp=$3; hsw=$4; va=$5; vb=$6; vfp=$7; vsw=$8; hp=$9; vp=${10}
     frame=$(((ha + hb) * (va + vb)))
+    nat="$ha,$hb,$hfp,$hsw,$va,$vb,$vfp,$vsw,$hp,$vp"
     # Deepest colour the monitor takes (EDID 1.4 byte 20), and its maximum vertical rate.
     by e 20; maxb=24
     case $(((e >> 4) & 7)) in 1) maxb=18 ;; 2) maxb=24 ;; 3|4|5|6) maxb=30 ;; esac
@@ -845,49 +866,99 @@ make_extra() {
     cap=$(link_cap); [ -n "$cap" ] || cap=17280000
     # With DSC (on for this monitor and supported): compressed to 8 bits per pixel on the link, but
     # the monitor's decoder takes at most <peak> Mpixel/s per slice; Qualcomm uses 4 slices above
-    # 2560 pixels wide here (LG 40U990A: 340 per slice; 355 = black screen, 323 = fine). 96 % margin.
+    # 2560 pixels wide here (LG 40U990A: 340 per slice; 355 = black screen, 323 = fine). 96 % margin
+    # for the automatic rates; your own rates are added as asked (the 30 s confirmation protects).
     dpk=$(dsc_peak "${h:16:16}")
-    list=""
+    tagof() {   # $1 = kHz -> dsc or bits per pixel the kernel will use
+        if [ -n "$dpk" ]; then echo dsc; return; fi
+        bp=18; for t in 24 30; do [ "$t" -le "$maxb" ] && [ $(($1 * t)) -le "$cap" ] && bp=$t; done; echo $bp
+    }
+    # Your own rates (extra-add W:H:HZ), from that resolution's timing closest to 60 Hz.
+    own=""; xf="$XR/${h:16:16}"; [ -f "$xf" ] || xf=/dev/null
+    while read -r want; do
+        [ -n "$want" ] || continue
+        ww=${want%%:*}; r=${want#*:}; wh=${r%%:*}; wz=${r#*:}
+        case "$seen " in *" $ww:$wh:$wz "*) continue ;; esac
+        bt=""; bs=99999
+        for tt in $alltim; do
+            IFS=, read -r a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 <<EOF
+$tt
+EOF
+            [ "$a1" = "$ww" ] && [ "$a5" = "$wh" ] || continue
+            sc=$((a11 > 600 ? a11 - 600 : 600 - a11))
+            [ "$sc" -lt "$bs" ] && { bs=$sc; bt="$a1,$a2,$a3,$a4,$a5,$a6,$a7,$a8,$a9,$a10"; }
+        done
+        [ -n "$bt" ] || { log "own rate $want: no timing for ${ww}x$wh in this monitor's EDID"; continue; }
+        IFS=, read -r a1 a2 _ _ a5 a6 _ <<EOF
+$bt
+EOF
+        khz=$(((a1 + a2) * (a5 + a6) / 100 * wz / 10))
+        own="$own $ww:$wh:$wz:$(tagof $khz):$bt"
+    done < "$xf"
+    auto=""
     for hz in $HZ_STEPS; do
         [ "$hz" -le "$vmax" ] || continue
         case "$seen " in *" $ha:$va:$hz "*) continue ;; esac
+        case "$own " in *" $ha:$va:$hz:"*) continue ;; esac
         khz=$((frame / 100 * hz / 10))
         if [ -n "$dpk" ]; then
             sl=2; [ "$ha" -gt 2560 ] && sl=4
             [ $((khz / sl)) -le $((dpk * 960)) ] && [ $((khz * 8)) -le $((cap / 100 * 98)) ] || continue
-            list="$list $hz:dsc"
         else
             [ $((khz * 18)) -le $((cap / 100 * 98)) ] || continue
-            bpp=18
-            for t in 24 30; do [ "$t" -le "$maxb" ] && [ $((khz * t)) -le "$cap" ] && bpp=$t; done
-            list="$list $hz:$bpp"
         fi
+        auto="$auto $ha:$va:$hz:$(tagof $khz):$nat"
     done
-    set -- $list
-    while [ "$#" -gt 5 ]; do shift; done
+    # The kernel reads at most 4 EDID blocks (512 bytes): base + 3 extensions, so the room left for
+    # our DisplayID blocks (five timings each) depends on how many the monitor already has. Your own
+    # rates first; the automatic ones fill the rest, as an even spread that keeps the fastest.
+    room=$(((3 - n) * 5)); [ "$room" -gt 0 ] || return 1
+    set -- $own
+    while [ "$#" -gt "$room" ]; do shift; done
+    sel="$*"; left=$((room - $#))
+    set -- $auto
+    if [ "$#" -gt "$left" ]; then
+        cnt=$#; pick=""; k=0
+        while [ "$k" -lt "$left" ]; do
+            idx=$cnt; [ "$left" -gt 1 ] && idx=$(((k * (cnt - 1) + (left - 1) / 2) / (left - 1) + 1))
+            eval "pick=\"\$pick \${$idx}\""
+            k=$((k + 1))
+        done
+        set -- $pick
+    fi
+    sel="$sel $*"
+    set -- $sel
     [ "$#" -gt 0 ] || return 1
-    asp=00
-    [ $((ha * 9)) -eq $((va * 16)) ] && asp=04
-    [ $((ha * 10)) -eq $((va * 16)) ] && asp=05
-    [ $((ha * 27)) -eq $((va * 64)) ] && asp=06
-    tim=""; modes=""
+    tim=""; modes=""; blocks=""; nt=0
     for m in "$@"; do
-        hz=${m%%:*}
-        p=$((frame / 100 * hz / 100 - 1))
+        IFS=: read -r mw mh hz tg tf <<EOF
+$m
+EOF
+        IFS=, read -r ha hb hfp hsw va vb vfp vsw hp vp <<EOF
+$tf
+EOF
+        asp=00
+        [ $((ha * 9)) -eq $((va * 16)) ] && asp=04
+        [ $((ha * 10)) -eq $((va * 16)) ] && asp=05
+        [ $((ha * 27)) -eq $((va * 64)) ] && asp=06
+        p=$(((ha + hb) * (va + vb) / 100 * hz / 100 - 1))
         tim="$tim$(printf '%02x%02x%02x' $((p & 255)) $(((p >> 8) & 255)) $(((p >> 16) & 255)))$asp"
         tim="$tim$(le16 $((ha - 1)))$(le16 $((hb - 1)))$(le16 $(((hfp - 1) | hp)))$(le16 $((hsw - 1)))"
         tim="$tim$(le16 $((va - 1)))$(le16 $((vb - 1)))$(le16 $(((vfp - 1) | vp)))$(le16 $((vsw - 1)))"
-        modes="$modes $ha:$va:$m"
+        modes="$modes $mw:$mh:$hz:$tg"
+        nt=$((nt + 1))
+        # A DisplayID extension block holds five type I timings: start a new block after five.
+        if [ "$nt" = 5 ]; then blocks="$blocks $(did_block "$tim" 5)"; tim=""; nt=0; fi
     done
-    nb=$(($# * 20))
-    sec="12$(printf '%02x' $((nb + 3)))0300"0300$(printf '%02x' $nb)$tim
-    blk="70$sec$(cks "$sec")"
-    while [ "${#blk}" -lt 254 ]; do blk="${blk}00"; done
-    blk="$blk$(cks "$blk")"
-    b0="${h:0:252}$(printf '%02x' $((n + 1)))"
+    [ "$nt" -gt 0 ] && blocks="$blocks $(did_block "$tim" $nt)"
+    nx=0; ext=""; for b in $blocks; do ext="$ext$b"; nx=$((nx + 1)); done
+    b0="${h:0:252}$(printf '%02x' $((n + nx)))"
     b0="$b0$(cks "$b0")"
-    echo "$b0${h:256}$blk" > "$BASE/extra.hex"
+    echo "$b0${h:256}$ext" > "$BASE/extra.hex"
     echo "${modes# }" > "$BASE/extra.modes"
+    IFS=, read -r ha hb _ _ va vb _ <<EOF
+$nat
+EOF
     echo "$ha:$va:$best_hz" > "$BASE/extra.base"
     echo "$h" > "$BASE/extra.real"
 }
@@ -895,6 +966,11 @@ make_extra() {
 # Build, write and apply for monitor $1. 0 = at least one extra rate offered now; 1 = none fits;
 # 2 = no debugfs; 3 = the kernel took none of them (cleared again).
 extra_apply() {
+    # Our custom EDID is in effect but the monitor's own copy is gone: start from the monitor again.
+    if [ -f "$BASE/custom.active" ] && [ ! -f "$BASE/extra.real" ]; then
+        log "$1: original EDID copy missing; reading the monitor again first"
+        custom_clear
+    fi
     make_extra || return 1
     debugfs_up || return 2
     read -r x < "$BASE/extra.hex"
@@ -922,9 +998,32 @@ extra_apply() {
 # Watcher, on connect: re-apply for a monitor that has extra rates switched on.
 extra_auto() {
     id=$(edid_id)
+    # With DSC on for this monitor, extra rates come along unless switched off for it.
+    [ -n "$id" ] && dsc_wanted "$id" && [ ! -f "$EXTRA/$id.off" ] && [ ! -f "$EXTRA/$id" ] && { mkdir -p "$EXTRA"; touch "$EXTRA/$id"; }
     [ -n "$id" ] && [ -f "$EXTRA/$id" ] && [ ! -f "$BASE/custom.active" ] || return 0
     log "$id: extra refresh rates are on for this monitor; applying"
     extra_apply "$id"
+}
+
+# Your own refresh rate for a resolution of this monitor: add/remove, then apply (one re-plug).
+xrate_cmd() {
+    settle
+    connected || { echo "error=No external display connected"; return 1; }
+    id=$(edid_id); xk=$2
+    echo "$xk" | grep -qE '^[0-9]{3,5}:[0-9]{3,5}:[0-9]{2,3}$' || { echo "error=Use W:H:HZ, for example 3840:2160:100"; return 1; }
+    z=${xk##*:}; [ "$z" -ge 20 ] && [ "$z" -le 240 ] || { echo "error=Refresh rate between 20 and 240 Hz"; return 1; }
+    mkdir -p "$XR" "$EXTRA"
+    case "$1" in
+        add) grep -qx "$xk" "$XR/$id" 2>/dev/null || echo "$xk" >> "$XR/$id"; log "$id: own rate $xk added"
+             rm -f "${EXTRA:?}/${id:?}.off"; touch "$EXTRA/$id" ;;
+        del) [ -f "$XR/$id" ] && { grep -vx "$xk" "$XR/$id" > "$XR/$id.tmp"; mv -f "$XR/$id.tmp" "$XR/$id"; }; log "$id: own rate $xk removed" ;;
+    esac
+    extra_apply "$id"
+    case $? in
+        0) case " $(offered)" in *" $xk "*) echo "ok=1" ;; *) [ "$1" = add ] && echo "error=Added, but the phone did not accept $xk (link or decoder)" || echo "ok=1" ;; esac ;;
+        1) [ "$1" = del ] && { custom_clear; echo "ok=1"; } || echo "error=No room or no timing for that resolution" ;;
+        *) echo "error=The phone did not accept the new rates" ;;
+    esac
 }
 
 extra_cmd() {
@@ -936,13 +1035,13 @@ extra_cmd() {
             mkdir -p "$EXTRA"
             extra_apply "$id"
             case $? in
-                0) touch "$EXTRA/$id"; echo "ok=1" ;;
+                0) touch "$EXTRA/$id"; rm -f "${EXTRA:?}/${id:?}.off"; echo "ok=1" ;;
                 1) echo "error=No higher refresh rate fits this monitor and the link (or its EDID has no usable timing)" ;;
                 2) echo "error=Qualcomm DisplayPort debugfs not available" ;;
                 *) echo "error=The phone did not accept the extra rates for this monitor" ;;
             esac ;;
         off)
-            rm -f "$EXTRA/$id"
+            rm -f "$EXTRA/$id"; touch "$EXTRA/$id.off"
             custom_clear
             echo "ok=1" ;;
         *) echo "error=use: extra on|off" ;;
@@ -1000,8 +1099,12 @@ clk_of() {
     done
 }
 
+# Mode $1 was reverted before on monitor $2 (black or flickering).
+mode_bad() { grep -qx "$1" "$BASE/bad/$2" 2>/dev/null; }
+
 # Mode $1 fits the DSC decoder of monitor $2 (always true without DSC).
 dsc_fits() {
+    mode_bad "$1" "$2" && return 1
     pk=$(dsc_peak "$2"); [ -n "$pk" ] || return 0
     ck=$(clk_of "$1"); [ -n "$ck" ] || return 0
     [ $((ck / 4)) -le $((pk * 1000)) ]
@@ -1031,7 +1134,10 @@ mode_info() {
     cat "$DBG/edid_modes" 2>/dev/null | while read -r res fz _ _ _ ck _; do
         [ -n "$ck" ] || continue
         key="${res%x*}:${res#*x}:$fz"
-        if [ -n "$pk" ]; then
+        if mode_bad "$key" "$id"; then
+            dm=plain; [ -n "$pk" ] && dm=dsc
+            echo "$key:$maxb:$dm:1"
+        elif [ -n "$pk" ]; then
             ov=0; [ $((ck / 4)) -gt $((pk * 1000)) ] && ov=1
             echo "$key:$maxb:dsc:$ov"
         else
@@ -1064,6 +1170,7 @@ dsc_auto() {
         log "$id: not checked for DSC yet; checking"
         dsc_set 1; hw_replug
         if dsc_learn "$id"; then
+            [ -f "$EXTRA/$id.off" ] || { mkdir -p "$EXTRA"; touch "$EXTRA/$id"; }
             dsc_arm "$id"
         else
             log "$id: no DSC"
@@ -1098,7 +1205,9 @@ dsc_cmd() {
                 dsc_disable "$id" none >/dev/null
                 echo "error=This monitor does not report DSC support"; return 1
             fi
-            # Extra rates are worked out again with the compression limits.
+            # Extra rates come with DSC (unless switched off for this monitor), worked out with the
+            # compression limits.
+            [ -f "$EXTRA/$id.off" ] || { mkdir -p "$EXTRA"; touch "$EXTRA/$id"; }
             [ -f "$EXTRA/$id" ] && extra_apply "$id"
             dsc_arm "$id"
             echo "confirm=45"; echo "ok=1" ;;
@@ -1133,6 +1242,13 @@ revert_now() {
         return 0
     fi
     log "not confirmed: back to $prev"
+    # The mode that was not kept probably left the monitor black or flickering: remember it for this
+    # monitor so it is crossed out and not chosen again (bad/<id>, one W:H:HZ per line).
+    fl=""; read -r fl 2>/dev/null < "$PROF/$f"; fl=${fl%:1}
+    if [ -n "$fl" ] && [ "$fl" != "$prev" ]; then
+        mkdir -p "$BASE/bad"; grep -qx "$fl" "$BASE/bad/${f%%-*}" 2>/dev/null || echo "$fl" >> "$BASE/bad/${f%%-*}"
+        log "${f%%-*}: $fl remembered as not working"
+    fi
     echo "$prev:1" > "$PROF/$f"
     settle
     apply_mode "$prev" "$(ext_sf_id)"
@@ -1150,7 +1266,16 @@ revert_timer() {
 confirm_cmd() {
     case "$1" in
         back) if revert_now; then echo "ok=1"; else echo "error=Nothing to undo"; fi ;;
-        *) [ -f "$CONF" ] && { rm -f "${CONF:?}"; log "confirmed"; }; echo "ok=1" ;;
+        *) if [ -f "$CONF" ]; then
+               rm -f "${CONF:?}"; log "confirmed"
+               # Kept: it works on this monitor after all.
+               act=$(active_mode); act=${act:+$(to_key "$act")}; ci=$(edid_id)
+               if [ -n "$act" ] && mode_bad "$act" "$ci"; then
+                   grep -vx "$act" "$BASE/bad/$ci" > "$BASE/bad/$ci.tmp"; mv -f "$BASE/bad/$ci.tmp" "$BASE/bad/$ci"
+                   log "$ci: $act works after all; no longer marked"
+               fi
+           fi
+           echo "ok=1" ;;
     esac
 }
 
@@ -1530,6 +1655,9 @@ case "$1" in
     revert-timer) revert_timer ;;
     thermal-fallback) thermal_cmd "$2" ;;
     dex-recover) dex_recover_cmd "$2" ;;
+    extra-add) lock; xrate_cmd add "$2"; unlock ;;
+    extra-del) lock; xrate_cmd del "$2"; unlock ;;
+    forget-failed) connected && { i=$(edid_id); rm -f "${BASE:?}/bad/${i:?}"; log "$i: failed modes forgotten"; mode_info; }; echo "ok=1" ;;
     temp-override|desk-mode) desk_cmd "$2" ;;
     temp-limit|desk-limit) desk_limit_cmd "$2" "$3" ;;
     desk-run) desk_run ;;

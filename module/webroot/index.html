@@ -57,7 +57,10 @@
   details.card[open] > summary { margin-bottom: 10px; }
   details p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   .sep { border-top: 1px solid var(--line); margin: 14px 0; }
-  .chip.over { opacity: .45; text-decoration: line-through; }
+  .chip.over:not(.active) { border-color: var(--mid); color: var(--mid); }
+  .own { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+  .own select, .own input { font: inherit; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--text); min-height: 40px; }
+  .own input { width: 90px; }
   .layout { display: grid; gap: 0 16px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "live" "main"; }
   .layout > main { grid-area: main; min-width: 0; }
   .live { grid-area: live; }
@@ -112,6 +115,7 @@
   </div>
   <div id="modes" class="empty">–</div>
   <div class="hint" id="legend" style="margin-top:8px"></div>
+  <button class="wide" id="forgetBtn" style="display:none">Forget failed modes for this monitor</button>
   <button class="wide" id="resetBtn">Use the monitor's default</button>
   <div class="msg" id="msg"></div>
   <div class="sep"></div>
@@ -188,6 +192,10 @@
   <div>Extra refresh rates (custom timings)</div>
   <div class="hint">Adds faster versions of the monitor's native mode that fit the link (and decoder).</div>
   <button class="wide" id="expBtn">Add extra refresh rates for this monitor</button>
+  <div style="margin-top:12px">Your own refresh rate</div>
+  <div class="hint">Any resolution of this monitor, any rate; keep it within 30 s.</div>
+  <div class="own"><select id="ownRes"></select><input id="ownHz" type="number" min="20" max="240" step="1" placeholder="Hz"><button id="ownAdd">Add</button></div>
+  <div class="chips" id="ownList" style="margin-top:8px"></div>
   <div class="hint" id="expState" style="margin-top:8px"></div>
   <div class="msg" id="expMsg"></div>
 </details>
@@ -375,8 +383,30 @@
       : (s.thermal_fallback === "1" ? "On." : "Off.");
   }
 
+  function renderOwn(s) {
+    const sel = el("ownRes"), keep = sel.value;
+    const res = [...new Set(s.modes.map(resOf))].sort((a, b) => { const [aw, ah] = a.split("x").map(Number), [bw, bh] = b.split("x").map(Number); return bw * bh - aw * ah; });
+    if (sel.dataset.list !== res.join(",")) {
+      sel.innerHTML = res.map((r) => '<option value="' + r + '">' + pretty(r) + "</option>").join("");
+      sel.dataset.list = res.join(",");
+      if (res.includes(keep)) sel.value = keep;
+    }
+    el("ownAdd").disabled = busy || s.connected !== "1";
+    const box = el("ownList"); box.innerHTML = "";
+    for (const k of (s.own || "").split(" ").filter(Boolean)) {
+      const b = document.createElement("button");
+      b.className = "chip"; b.textContent = fmtKey(k) + "  ×"; b.disabled = busy; b.title = "Remove";
+      b.onclick = async () => {
+        busy = true; render(last); setMsg("expMsg", "Removing " + fmtKey(k) + ". The monitor reconnects…");
+        const out = parse((await run("sh " + SCRIPT + " extra-del " + k)).stdout || "");
+        busy = false; setMsg("expMsg", out.error || "Removed.", out.error ? "err" : "ok"); refresh();
+      };
+      box.appendChild(b);
+    }
+  }
+
   function renderExp(s) {
-    renderDsc(s); renderConfirm(s); renderTherm(s);
+    renderDsc(s); renderConfirm(s); renderTherm(s); renderOwn(s);
     const btn = el("expBtn"), st = el("expState");
     const on = s.extraOn.includes(s.id), keys = Object.keys(s.extraBpp);
     btn.textContent = on ? "Remove extra refresh rates" : "Add extra refresh rates for this monitor";
@@ -393,6 +423,17 @@
 
   // ---- Visual helpers: colour by level, gauges with a marker, small graphs (kept 60 s, in memory) ----
   const hist = {};
+  let prevCpu = {}, cpuLoad = {};
+  // CPU load per core group from two readings of its busy/total time.
+  function sampleCpu(s) {
+    for (const k of Object.keys(s)) {
+      if (!k.startsWith("cpu_policy")) continue;
+      const p = s[k].split(":").map(Number); if (p.length < 5) continue;
+      const pr = prevCpu[k];
+      if (pr && p[4] > pr.t) cpuLoad[k] = Math.max(0, Math.min(100, (p[3] - pr.b) / (p[4] - pr.t) * 100));
+      prevCpu[k] = { b: p[3], t: p[4] };
+    }
+  }
   function remember(key, t, v) {
     if (v === null || v === undefined || isNaN(v)) return;
     const a = hist[key] = hist[key] || [];
@@ -474,10 +515,11 @@
       h += sec("GPU", g);
     }
     // CPU per core group: current clock, marker at the allowed maximum
-    const groups = Object.keys(s).filter((k) => k.startsWith("cpu_policy")).map((k) => { const p = s[k].split(":").map(Number); return { cur: p[0], max: p[1], top: p[2] }; }).sort((a, b) => b.top - a.top);
+    const groups = Object.keys(s).filter((k) => k.startsWith("cpu_policy")).map((k) => { const p = s[k].split(":").map(Number); return { cur: p[0], max: p[1], top: p[2], load: cpuLoad[k] }; }).sort((a, b) => b.top - a.top);
     let cb2 = "";
     groups.forEach((g, i) => {
       const held = g.max < g.top * 0.97;
+      if (g.load !== undefined) { const lc = lvl(g.load, 70, 92); cb2 += row((i === 0 ? "Fast" : "Other") + " load", colored(nf(g.load, 0) + " %", lc)) + gauge(g.load, lc); }
       cb2 += row(i === 0 ? "Fast cores" : "Other cores", ghz(g.cur) + " GHz" + ' <span class="label">/ ' + (held ? colored(ghz(g.max) + " max", "bad") : ghz(g.top)) + "</span>");
       cb2 += gauge(g.cur / g.top * 100, held ? "mid" : "acc", g.max / g.top * 100, held);
     });
@@ -547,7 +589,8 @@
     if (s.kern && s.kern.bpp) f += fact("Colour depth", s.kern.bpp / 3 + "-bit per colour" + (s.dsc_active === "1" ? ", compressed (DSC)" : ""));
     el("facts").innerHTML = f; el("tech").innerHTML = t;
     const anyAdded = Object.keys(s.extraBpp).length > 0, anyOver = Object.values(s.mi).some((x) => x.over);
-    el("legend").textContent = "bit = colour depth · DSC = compressed" + (anyAdded ? " · + = added" : "") + (anyOver ? " · crossed out = too fast for the decoder" : "");
+    el("legend").textContent = "bit = colour depth · DSC = compressed" + (anyAdded ? " · + = added" : "") + (anyOver ? " · ⚠ = may not work (too fast for the decoder, or did not work before)" : "");
+    el("forgetBtn").style.display = s.bad && !busy ? "" : "none";
     el("fixBtn").style.display = dexMismatch && !busy ? "" : "none";
     reset.disabled = busy || !s.saved;
 
@@ -568,8 +611,10 @@
         const mi = s.mi[key], over = !!(mi && mi.over && key !== currentKey);
         b.className = "chip" + (key === currentKey ? " active" : "") + (key === savedKey ? " saved" : "") + (over ? " over" : "");
         b.textContent = hzOf(m) + " Hz" + (mi ? " · " + mi.bits + "-bit" + (mi.dsc ? " DSC" : "") : "") + (s.extraBpp[key] ? " +" : "");
-        b.title = over ? "Too fast for this monitor's DSC decoder" : "";
-        b.disabled = busy || over;
+        const isBad = (" " + (s.bad || "") + " ").includes(" " + key + " ");
+        b.title = over ? (isBad ? "Did not work on this monitor before; you can try again (keep it within 30 s)" : "Probably too fast for this monitor's DSC decoder; you can try it (keep it within 30 s)") : "";
+        if (over) b.textContent = "⚠ " + b.textContent;
+        b.disabled = busy;
         b.onclick = () => apply(key, fmtKey(key), key === currentKey, false);
         chips.appendChild(b);
       }
@@ -625,6 +670,7 @@
 
   function sample(s) {
     samplePower(s);
+    sampleCpu(s);
     const ti = parseFloat(s.t), fi = parseInt(s.inner_frames, 10);
     if (s.phone === "on" && !isNaN(ti) && !isNaN(fi)) {
       if (prevInner && ti > prevInner.t && fi >= prevInner.f) innerFps = (fi - prevInner.f) / (ti - prevInner.t);
@@ -709,6 +755,23 @@
     refresh();
   };
 
+  el("ownAdd").onclick = async () => {
+    const r = el("ownRes").value, hz = parseInt(el("ownHz").value, 10);
+    if (!r || !(hz >= 20 && hz <= 240)) { setMsg("expMsg", "Pick a resolution and a refresh rate between 20 and 240 Hz.", "err"); return; }
+    const k = r.replace("x", ":") + ":" + hz;
+    busy = true; render(last); setMsg("expMsg", "Adding " + fmtKey(k) + ". The monitor reconnects…");
+    const out = parse((await run("sh " + SCRIPT + " extra-add " + k)).stdout || "");
+    busy = false;
+    setMsg("expMsg", out.error || ("Added. Pick " + fmtKey(k) + " in the list above and keep it within 30 s."), out.error ? "err" : "ok");
+    refresh();
+  };
+
+  el("forgetBtn").onclick = async () => {
+    busy = true; render(last);
+    await run("sh " + SCRIPT + " forget-failed");
+    busy = false; setMsg("msg", "Forgotten: those modes can be tried again (keep them within 30 s).", "ok"); refresh();
+  };
+
   el("dexRecSw").onchange = async (e) => {
     busy = true;
     await run("sh " + SCRIPT + " dex-recover " + (e.target.checked ? "on" : "off"));
@@ -766,7 +829,7 @@
     while (!document.hidden) { await refresh(); await new Promise((ok) => setTimeout(ok, 1000)); }
     polling = false;
   }
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; pw = []; prevInner = null; innerFps = null; for (const k in hist) delete hist[k]; loop(); } });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; pw = []; prevInner = null; innerFps = null; prevCpu = {}; cpuLoad = {}; for (const k in hist) delete hist[k]; loop(); } });
   loop();
 </script>
 </body>

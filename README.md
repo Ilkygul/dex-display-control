@@ -56,6 +56,12 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   monitors automatically" on, every monitor is checked once when it first connects; DSC is switched
   on where supported (you keep it with one tap). On an LG 40U990A 5120x2160 runs at **100 and
   110 Hz in 10-bit colour**. Modes too fast for a monitor's DSC decoder are refused and avoided.
+- **Your own refresh rates** (Experimental): pick any resolution of the monitor and type a rate;
+  the module builds it from that resolution's own timing. Extra rates come along automatically
+  when DSC is on (up to the room the EDID leaves; the kernel reads at most 4 EDID blocks).
+- **Nothing is blocked:** modes that may be too fast for a monitor's decoder, or that did not work
+  before, are marked ⚠ but stay clickable; the 30-second "keep this mode" check protects you, and a
+  mode you keep is no longer marked.
 - **Colour depth per mode.** Every mode in the list shows the colour depth the phone will send
   (6-, 8- or 10-bit, and whether it is compressed), worked out the way the kernel picks it.
 - **Confirm or go back.** While an experimental option is on, a new mode must be confirmed within
@@ -82,7 +88,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.9.2.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.10.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -129,6 +135,8 @@ su -c "sh $M inner-hz 60"            # phone screen refresh while connected (or:
 su -c "sh $M extra on"               # experimental extra refresh rates for this monitor (or: off)
 su -c "sh $M dsc on"                 # experimental compression (DSC) for this monitor (or: off)
 su -c "sh $M dsc auto-on"            # check new monitors for DSC when they connect (or: auto-off)
+su -c "sh $M extra-add 3840:2160:100" # your own refresh rate for a resolution (extra-del removes it)
+su -c "sh $M forget-failed"          # forget modes that were not kept on this monitor
 su -c "sh $M thermal-fallback on"    # 60 Hz while the phone is hot (or: off)
 su -c "sh $M temp-override on"       # experimental temperature override (or: off)
 su -c "sh $M dex-recover off"        # do not bring DeX back after a reconnect (or: on)

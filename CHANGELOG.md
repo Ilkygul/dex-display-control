@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.10.0 (2026-11-17)
+
+- Your own refresh rates: any resolution, any rate (`extra-add` / `extra-del`, form on the page).
+- Extra rates switch on automatically with DSC (also for monitors already set up), up to the room in
+  4 EDID blocks (the kernel ignores more), as an even spread that keeps the fastest.
+- Nothing greyed out any more: possibly too fast or previously failed modes are marked ⚠ and can be
+  tried; a mode that is not kept is remembered per monitor, a mode that is kept is cleared again
+  (`forget-failed` / button).
+- Live panel: CPU load per core group.
+- Wireless adb start-up script fix (busybox `ip`), not part of the module.
+
 ## v2.9.2 (2026-11-17)
 
 - Page: every setting explanation shortened to one short sentence; shorter legend and technical notes.
