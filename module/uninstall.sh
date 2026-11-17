@@ -20,8 +20,16 @@ fi
 # Composer mode override, app frame clock, custom EDID.
 setprop vendor.display.hdmi_cfg_idx ""
 service call SurfaceFlingerAIDL 85 >/dev/null 2>&1
-if [ -f "$B/custom.active" ] || [ -f "$B/custom.armed" ]; then
-    [ -e /sys/kernel/debug/drm_dp/edid ] && printf 'zz' > /sys/kernel/debug/drm_dp/edid 2>/dev/null
+# Custom EDID and DSC: cleared with the DP output off (software re-plug), as the module does it.
+# (KernelSU usually runs this at the next boot, when none of it is set any more.)
+D=/sys/kernel/debug/drm_dp
+if [ -e "$D/sim" ] && { [ -f "$B/custom.sum" ] || [ -d "$B/dsc" ]; }; then
+    echo "ExtDispOff,1" > /sys/class/dp_sec/dex 2>/dev/null
+    sleep 4
+    echo 0 > "$D/sim" 2>/dev/null
+    echo 0 > "$D/dsc_feature_enable" 2>/dev/null
+    echo 0 > "$D/fec_feature_enable" 2>/dev/null
+    echo "ExtDispOff,0" > /sys/class/dp_sec/dex 2>/dev/null
 fi
 
 # Phone screen on, in case the guard was holding it off.

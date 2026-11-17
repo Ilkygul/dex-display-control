@@ -189,6 +189,7 @@ pace() {
     l=$(dmesg 2>/dev/null | grep "dp_panel_resolution_info: [0-9]" | tail -n 1)
     l=${l#*dp_panel_resolution_info: }
     [ -n "$l" ] && echo "$(edid_id)|$l" > "$LINK"
+    dsc_note
     rm -f "$DMC"
 }
 
@@ -234,6 +235,12 @@ status() {
     [ -f "$BASE/custom.active" ] && { read -r ca < "$BASE/custom.active"; echo "custom=active:$ca"; }
     [ -f "$BASE/extra.modes" ] && { read -r xm < "$BASE/extra.modes"; echo "extra_modes=$xm"; }
     [ -d "$EXTRA" ] && for f in "$EXTRA"/*; do [ -f "$f" ] && echo "extra_on=${f##*/}"; done
+    [ -d "$DSCD" ] && for f in "$DSCD"/*; do [ -f "$f" ] && { read -r v < "$f"; echo "dsc_on=${f##*/}:${v#peak=}"; }; done
+    [ -f "$BASE/dsc.state" ] && { read -r v < "$BASE/dsc.state"; echo "dsc_active=$v"; }
+    if [ -f "$CONF" ]; then
+        read -r _ cp cd < "$CONF"; read -r u _ < /proc/uptime; u=${u%.*}
+        echo "confirm_prev=$cp"; echo "confirm_left=$((cd - u > 0 ? cd - u : 0))"
+    fi
     if ! connected; then
         echo "connected=0"
         return 0
@@ -323,11 +330,22 @@ set_mode() {
         *) echo "error=This monitor does not offer $key"; return 1 ;;
     esac
     var=$(variant)
+    prev=$(active_mode); prev=${prev:+$(to_key "$prev")}
+    arm=0
+    if [ "$2" != keep ] && [ -n "$prev" ] && [ "$prev" != "$key" ] && experimental "$id"; then
+        # Keep the first unconfirmed mode's predecessor if one is already pending.
+        p0=""; [ -f "$CONF" ] && read -r _ p0 _ < "$CONF"
+        echo "$id-$var ${p0:-$prev} $(($(up_s) + CONF_S + 12))" > "$CONF"
+        arm=1
+    elif [ -f "$CONF" ]; then
+        rm -f "${CONF:?}"
+    fi
     echo "$key:1" > "$PROF/$id-$var"
     echo "$id" > "$BASE/last"
     log "set $id ($var) -> $key"
     apply_mode "$key" "$(ext_sf_id)"
     spawn sh "$0" pace
+    [ "$arm" = 1 ] && { spawn sh "$0" revert-timer; echo "confirm=$CONF_S"; }
     echo "ok=1"
 }
 
@@ -568,12 +586,12 @@ EOF
             log "custom EDID still in effect after clearing; will retry on the next connect"
             return 1
         fi
-        rm -f "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base"
+        rm -f "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real"
         log "custom EDID cleared; monitor read with its own EDID"
     else
         # Nothing to read now: keep custom.sum, the next connect checks what the monitor sends.
         sim_off
-        rm -f "$BASE/extra.modes" "$BASE/extra.base"
+        rm -f "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real"
         log "custom EDID cleared (checked again at the next connect)"
     fi
 }
@@ -594,7 +612,7 @@ custom_on_connect() {
         return 1
     fi
     # The monitor's own EDID was read: nothing custom in effect.
-    rm -f "$BASE/custom.sum" "$BASE/custom.active" "$BASE/extra.modes" "$BASE/extra.base"
+    rm -f "$BASE/custom.sum" "$BASE/custom.active" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real"
     return 0
 }
 
@@ -608,7 +626,7 @@ custom_on_connect() {
 # monitor's own data stays as it is. Tested: LG 40U990A 5120x2160 at 70/75/80 Hz (18 bpp), 2026-11-17.
 # Remembered per monitor in $EXTRA/<id> and applied again on every connect.
 EXTRA=$BASE/extra
-HZ_STEPS="70 75 80 85 90 100 110 120 144 165"
+HZ_STEPS="70 75 80 85 90 100 105 110 115 120 144 165"
 
 # Link payload as the kernel counts it (kHz x bits): link rate x lanes x 8.
 link_cap() {
@@ -655,6 +673,7 @@ consider() {
     fr=$(((ha + hb) * (va + vb)))
     hz10=$((pk * 10 / (fr / 1000)))
     [ "$hz10" -ge 500 ] || return
+    seen="$seen $ha:$va:$(((hz10 + 5) / 10))"
     ar=$((ha * va)); sc=$((hz10 > 600 ? hz10 - 600 : 600 - hz10))
     if [ "$ar" -gt "$best_ar" ] || { [ "$ar" -eq "$best_ar" ] && [ "$sc" -lt "$best_sc" ]; }; then
         best_ar=$ar; best_sc=$sc; best="$ha $hb $hfp $hsw $va $vb $vfp $vsw $hp $vp"; best_hz=$(((hz10 + 5) / 10))
@@ -666,11 +685,13 @@ cks() { s=0; i=0; while [ "$i" -lt "${#1}" ]; do s=$((s + 0x${1:$i:2})); i=$((i 
 # Writes $BASE/extra.hex (the new EDID) and $BASE/extra.modes ("W:H:HZ:BPP ..."); 1 if nothing fits.
 # mksh arithmetic is 32-bit, hence the divisions before multiplying.
 make_extra() {
-    h=$(edid_hex)
+    # While a custom EDID of ours is in effect the connector shows that one: use the saved original.
+    h=""; [ -f "$BASE/custom.active" ] && read -r h 2>/dev/null < "$BASE/extra.real"
+    [ -n "$h" ] || h=$(edid_hex)
     [ "${#h}" -ge 256 ] || return 1
     by n 126
     [ "$n" -le 6 ] && [ "${#h}" -eq $(((n + 1) * 256)) ] || return 1
-    best=""; best_ar=0; best_sc=99999
+    best=""; best_ar=0; best_sc=99999; seen=""
     for o in 54 72 90 108; do dtd_at $o && consider; done
     e=1
     while [ "$e" -le "$n" ]; do
@@ -705,17 +726,26 @@ make_extra() {
         esac
     done
     [ "$vmax" -gt 0 ] || vmax=120
-    top=0
-    for k in $(offered); do case "$k" in "$ha:$va:"*) z=${k##*:}; [ "$z" -gt "$top" ] && top=$z ;; esac; done
     cap=$(link_cap); [ -n "$cap" ] || cap=17280000
+    # With DSC (on for this monitor and supported): compressed to 8 bits per pixel on the link, but
+    # the monitor's decoder takes at most <peak> Mpixel/s per slice; Qualcomm uses 4 slices above
+    # 2560 pixels wide here (LG 40U990A: 340 per slice; 355 = black screen, 323 = fine). 96 % margin.
+    dpk=$(dsc_peak "${h:16:16}")
     list=""
     for hz in $HZ_STEPS; do
-        [ "$hz" -gt "$top" ] && [ "$hz" -le "$vmax" ] || continue
+        [ "$hz" -le "$vmax" ] || continue
+        case "$seen " in *" $ha:$va:$hz "*) continue ;; esac
         khz=$((frame / 100 * hz / 10))
-        [ $((khz * 18)) -le $((cap / 100 * 98)) ] || continue
-        bpp=18
-        for t in 24 30; do [ "$t" -le "$maxb" ] && [ $((khz * t)) -le "$cap" ] && bpp=$t; done
-        list="$list $hz:$bpp"
+        if [ -n "$dpk" ]; then
+            sl=2; [ "$ha" -gt 2560 ] && sl=4
+            [ $((khz / sl)) -le $((dpk * 960)) ] && [ $((khz * 8)) -le $((cap / 100 * 98)) ] || continue
+            list="$list $hz:dsc"
+        else
+            [ $((khz * 18)) -le $((cap / 100 * 98)) ] || continue
+            bpp=18
+            for t in 24 30; do [ "$t" -le "$maxb" ] && [ $((khz * t)) -le "$cap" ] && bpp=$t; done
+            list="$list $hz:$bpp"
+        fi
     done
     set -- $list
     while [ "$#" -gt 5 ]; do shift; done
@@ -726,7 +756,7 @@ make_extra() {
     [ $((ha * 27)) -eq $((va * 64)) ] && asp=06
     tim=""; modes=""
     for m in "$@"; do
-        hz=${m%:*}
+        hz=${m%%:*}
         p=$((frame / 100 * hz / 100 - 1))
         tim="$tim$(printf '%02x%02x%02x' $((p & 255)) $(((p >> 8) & 255)) $(((p >> 16) & 255)))$asp"
         tim="$tim$(le16 $((ha - 1)))$(le16 $((hb - 1)))$(le16 $(((hfp - 1) | hp)))$(le16 $((hsw - 1)))"
@@ -743,6 +773,7 @@ make_extra() {
     echo "$b0${h:256}$blk" > "$BASE/extra.hex"
     echo "${modes# }" > "$BASE/extra.modes"
     echo "$ha:$va:$best_hz" > "$BASE/extra.base"
+    echo "$h" > "$BASE/extra.real"
 }
 
 # Build, write and apply for monitor $1. 0 = at least one extra rate offered now; 1 = none fits;
@@ -780,7 +811,6 @@ extra_cmd() {
     case "$1" in
         on)
             mkdir -p "$EXTRA"
-            [ -f "$BASE/custom.active" ] && { touch "$EXTRA/$id"; echo "ok=1"; return; }
             extra_apply "$id"
             case $? in
                 0) touch "$EXTRA/$id"; echo "ok=1" ;;
@@ -793,6 +823,117 @@ extra_cmd() {
             custom_clear
             echo "ok=1" ;;
         *) echo "error=use: extra on|off" ;;
+    esac
+}
+
+# ---- Experimental: Display Stream Compression (DSC) per monitor --------------------------------
+# Qualcomm's driver has DSC and FEC switched off on this phone; debugfs dsc_feature_enable and
+# fec_feature_enable switch them on, and the next connect reads the monitor's DSC capabilities
+# (only monitors that report DSC use it). Compressed to 8 bits per pixel, 5120x2160 at 100/110 Hz
+# fits the HBR2 x4 link (LG 40U990A, tested 2026-11-17). The switches are global and reset on boot,
+# so on every connect they are set to what that monitor wants. $DSCD/<id> holds "peak=<Mpixel/s per
+# slice>" learned from the kernel log.
+DSCD=$BASE/dsc
+
+dsc_flag() { debugfs_up || return 1; read -r f < "$DBG/dsc_feature_enable"; [ "$f" = Y ]; }
+dsc_set() { debugfs_up || return 1; echo "$1" > "$DBG/fec_feature_enable"; echo "$1" > "$DBG/dsc_feature_enable"; }
+
+# Decoder limit for monitor $1 if DSC is on for it and the switches are on; empty otherwise.
+dsc_peak() {
+    [ -f "$DSCD/$1" ] && dsc_flag || return 0
+    pk=""; read -r pk 2>/dev/null < "$DSCD/$1"; pk=${pk#peak=}
+    [ "${pk:-0}" -gt 0 ] 2>/dev/null && echo "$pk"
+}
+
+# After a connect with the switches on: does the monitor take DSC, and its per-slice limit.
+dsc_learn() {
+    # Separate greps: the peak line is printed dozens of times per connect.
+    l=$(dmesg 2>/dev/null | grep "secdp_show_sink_caps: DSC version" | tail -n 1)
+    case "$l" in *"support:1"*) ;; *) return 1 ;; esac
+    pk=$(dmesg 2>/dev/null | sed -n 's/.*peak_throughput=\([0-9]*\).*/\1/p' | tail -n 1)
+    echo "peak=${pk:-340}" > "$DSCD/$1"
+    log "$1: DSC supported, decoder limit ${pk:-340} Mpixel/s per slice"
+}
+
+# Remember what the kernel did at the last mode set (compression on or off) for the status page.
+dsc_note() {
+    c=$(dmesg 2>/dev/null | grep "dp_catalog_panel_dsc_cfg: compression:" | tail -n 1)
+    case "$c" in "") ;; *"compression:0x0 "*) echo 0 > "$BASE/dsc.state" ;; *) echo 1 > "$BASE/dsc.state" ;; esac
+}
+
+# Watcher, on connect: switches to what this monitor wants. 0 = they changed (a re-plug is needed).
+dsc_auto() {
+    id=$(edid_id)
+    want=N; [ -f "$DSCD/$id" ] && want=Y
+    debugfs_up || return 1
+    read -r f < "$DBG/dsc_feature_enable"
+    [ "$f" = "$want" ] && return 1
+    if [ "$want" = Y ]; then dsc_set 1; else dsc_set 0; fi
+    log "$id: DSC switches -> $want"
+    return 0
+}
+
+dsc_cmd() {
+    settle
+    connected || { echo "error=No external display connected"; return 1; }
+    debugfs_up || { echo "error=Qualcomm DisplayPort debugfs not available"; return 1; }
+    id=$(edid_id); [ -n "$id" ] || { echo "error=Cannot identify the monitor"; return 1; }
+    mkdir -p "$DSCD"
+    case "$1" in
+        on)
+            dsc_set 1; echo "peak=340" > "$DSCD/$id"
+            log "$id: DSC on; software re-plug"
+            hw_replug
+            if ! dsc_learn "$id"; then
+                rm -f "${DSCD:?}/${id:?}"; dsc_set 0
+                if [ -f "$EXTRA/$id" ]; then extra_apply "$id"; else hw_replug; fi
+                echo "error=This monitor does not report DSC support"; return 1
+            fi
+            # Extra rates are worked out again with the compression limits.
+            [ -f "$EXTRA/$id" ] && extra_apply "$id"
+            echo "ok=1" ;;
+        off)
+            rm -f "${DSCD:?}/${id:?}"; dsc_set 0
+            log "$id: DSC off"
+            if [ -f "$EXTRA/$id" ]; then extra_apply "$id"; else hw_replug; fi
+            echo "ok=1" ;;
+        *) echo "error=use: dsc on|off" ;;
+    esac
+}
+
+# ---- Confirm or go back ----------------------------------------------------------------------
+# An experimental mode (custom EDID or DSC in use) can leave the monitor black while the phone
+# thinks all is well. Such a mode change must be confirmed within CONF_S seconds, or the previous
+# mode comes back by itself. confirm.pending: "<profile file> <previous W:H:HZ> <deadline uptime>".
+CONF=$BASE/confirm.pending
+CONF_S=30
+
+experimental() { [ -f "$BASE/custom.active" ] || [ -f "$DSCD/$1" ]; }
+
+up_s() { read -r u _ < /proc/uptime; echo "${u%.*}"; }
+
+revert_now() {
+    [ -f "$CONF" ] || return 1
+    read -r f prev _ < "$CONF"; rm -f "${CONF:?}"
+    log "not confirmed: back to $prev"
+    echo "$prev:1" > "$PROF/$f"
+    settle
+    apply_mode "$prev" "$(ext_sf_id)"
+    pace
+}
+
+revert_timer() {
+    while [ -f "$CONF" ]; do
+        read -r _ _ dl < "$CONF"
+        [ "$(up_s)" -ge "${dl:-0}" ] && { revert_now; return; }
+        sleep 1
+    done
+}
+
+confirm_cmd() {
+    case "$1" in
+        back) if revert_now; then echo "ok=1"; else echo "error=Nothing to undo"; fi ;;
+        *) [ -f "$CONF" ] && { rm -f "${CONF:?}"; log "mode confirmed"; }; echo "ok=1" ;;
     esac
 }
 
@@ -821,6 +962,11 @@ watch() {
                 sum=$(cksum < $CONN/edid 2>/dev/null)
                 wait_sf >/dev/null
                 custom_on_connect || wait_sf >/dev/null
+                if dsc_auto; then
+                    # The switches only count at a connect: the extra rates' re-plug does it, or one now.
+                    id=$(edid_id)
+                    if [ -f "$EXTRA/$id" ]; then [ -f "$BASE/custom.active" ] && extra_apply "$id"; else hw_replug; fi
+                fi
                 extra_auto
                 on_connect
                 pace
@@ -862,7 +1008,10 @@ watch() {
 
 case "$1" in
     status) status "$2" ;;
-    set) set_mode "$2" ;;
+    set) set_mode "$2" "$3" ;;
+    confirm) confirm_cmd "$2" ;;
+    revert-timer) revert_timer ;;
+    dsc) dsc_cmd "$2" ;;
     reset) reset_mode ;;
     pace) pace ;;
     phone) phone_cmd "$2" ;;
@@ -873,10 +1022,10 @@ case "$1" in
     watch) tail -n 300 "$LOG" > "$LOG.trim" 2>/dev/null && mv -f "$LOG.trim" "$LOG"; watch ;;
     boot)
         # A fresh kernel has no custom EDID and no running guard.
-        rm -f "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off | confirm [back] | watch | boot" ;;
 esac

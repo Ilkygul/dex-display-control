@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.3.0 (2026-11-17)
+
+- Experimental compression (DSC) per monitor: `dsc on|off`. Detects support and the decoder limit,
+  re-applied on every connect. LG 40U990A: 5120x2160 at 100 and 110 Hz in 10-bit colour.
+- Extra rates take DSC into account (8 bits per pixel on the link, within the decoder's per-slice
+  limit) and fill gaps between the monitor's own rates (LG with DSC: 75/80/90/105/110 Hz).
+- Confirm or go back: with an experimental option on, a new mode must be kept within 30 s or the
+  previous one returns by itself (`confirm`, `confirm back`; a bar on the page).
+- Uninstall clears a custom EDID and the DSC switches the way the module does (output off first).
+- Measured power: DSC about 0.1 W; each extra Hz about 17 mW.
+
 ## v2.2.0 (2026-11-17)
 
 - Experimental extra refresh rates replace the 4K 75 Hz option: faster versions of the monitor's own

@@ -47,6 +47,13 @@ Internet on DeX.
 | Extra rates: LG's 60 Hz timing (htotal 5280, vtotal 2222) at a faster clock | LG 40U990A | 70/75/80 Hz offered; 80 Hz runs `938570Khz`, 18 bpp (6-bit), 4 x HBR2 at 98 %; DeX, apps (pacesetter) and the measured frame rate at 80 Hz; picture clean (checked on the monitor) |
 | Extra rates: turn on from the module | LG 40U990A | 8 s, rates worked out from the live link and the EDID's range limits (120 Hz max) |
 | Extra rates: monitor reconnects | LG 40U990A | Re-applied by itself, saved 80 Hz back after about 20 s |
+| DSC on (`dsc_feature_enable`, `fec_feature_enable` in debugfs + software re-plug) | LG 40U990A | Kernel: "DSC version: 1.2(support:1)", FEC on; 2 more DSC encoders in use (8 in the chip, the inner screen uses 2); 5120x2160 at 85/100/120 Hz and 3840x2160 at 120 Hz now offered; 60 Hz runs 10-bit |
+| DSC: the LG's own 120 Hz (1420 MHz) | LG 40U990A | **Black screen**, also after re-plugging (the mode was saved). HDCP fell back to 1.x and failed; the driver reset the link once. The LG's decoder limit is 340 Mpixel/s per slice, 4 slices = 355: over it |
+| DSC: 100 Hz (LG's timing) and 110 Hz (60 Hz timing at 1290.5 MHz) | LG 40U990A | Picture OK (checked on the monitor), 10-bit, HDCP 2.2 authenticated |
+| DSC in the module: `dsc on` | LG 40U990A | Detects support and the 340 limit from the kernel log; extra rates rebuilt with DSC: 75/80/90/105/110 Hz (115 left out: 99 % of the limit) |
+| Confirm or go back: 110 Hz confirmed, then 120 Hz not confirmed | LG 40U990A | 120 Hz black, back to 110 Hz by itself after about 40 s |
+| Reconnect with the DSC switches off (as after a reboot) | LG 40U990A | DSC switched on, extra rates added, 110 Hz back, in one extra reconnect |
+| Power (whole phone on battery via slate mode, still DeX screen, 50 s average) | LG 40U990A | 60 Hz 2.03 W; 60 Hz DSC 2.15 W; 80 Hz 6-bit 2.37 W; 110 Hz DSC 3.04 W |
 | Extra rates: remove while at 80 Hz | LG 40U990A | Back to 5120x2160 at 60 Hz, 8-bit, in one reconnect (the LG's preferred timing is 3440x1440, so the module sets the native mode instead of "no override") |
 | Phone screen refresh 30 Hz during DeX | Dell U3225QE | Works: SurfaceFlinger inner render 30 Hz; previous 120/120 restored on "Don't change" |
 | Keep phone screen off: unwanted wake | Dell U3225QE | `cmd power wakeup` while guarded: turned off again within 0.5 s |
@@ -67,10 +74,9 @@ Internet on DeX.
 
 ## Not yet tested
 
+- DSC with other monitors (the Dell U3225QE probably supports it), and 115 Hz on the LG.
 - The extra rates on the Dell U3225QE and the XREAL glasses (the XREAL already offers its 120 Hz
   maximum, so nothing would be added).
-- DSC compression (`dsc_feature_enable` / `fec_feature_enable` in debugfs, off by default): could fit
-  5120x2160 at 120 Hz in the link, risky, not tried.
 - XREAL "ultrawide" mode (a monitor that changes its own EDID without unplugging): handled in code
   (EDID checksum watch, per-variant profiles), not yet tried.
 - The soft-reboot composer restart as part of the module (it was tested as a stand-alone

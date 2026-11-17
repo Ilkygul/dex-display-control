@@ -96,6 +96,27 @@ Qualcomm's DP driver picks the deepest colour that fits the link, starting at th
 (at most 30 bpp, `max_bpp` in debugfs) and stepping down by 6 to 18 bpp (6-bit). That is why 4K
 60 Hz runs at 10-bit, 5120x2160 at 60 Hz at 8-bit, and the extra 5120x2160 70-80 Hz rates at 6-bit.
 
+## Experimental DSC (Display Stream Compression)
+
+Qualcomm's DP driver supports DSC 1.2 and FEC, but on this phone both are switched off
+(`dsc_feature_enable` and `fec_feature_enable` in `/sys/kernel/debug/drm_dp`, both `N`). Set to 1,
+the next connect reads the monitor's DSC capabilities from its DPCD; the kernel log then shows
+`secdp_show_sink_caps: DSC version: 1.2(support:1)`. Modes are then validated at 8 bits per pixel on
+the link, and the pixel-clock check uses a quarter of the clock, so 5120x2160 up to 120 Hz passes.
+
+What the phone does not check is the monitor's decoder: `peak_throughput` (Mpixel/s per slice) from
+its DPCD. With 4 slices at 5120 wide, the LG's 120 Hz needs 355 per slice against a limit of 340 and
+stays black. The module keeps its own extra rates within 96 % of that limit, and every experimental
+mode change has to be confirmed (or it goes back by itself).
+
+The switches are global and reset at boot. The module remembers per monitor whether DSC is wanted
+(`/data/adb/fold-display/dsc/<id>`) and sets the switches on every connect, with one software
+re-plug (shared with the extra rates' re-plug when both are on).
+
+The display chip has 8 DSC encoders; the inner screen uses 2, the monitor with DSC 2 more and 4
+layer mixers (1280 pixels wide each). The DP pixel clock is lower with DSC (a quarter instead of
+half the mode's clock), and the measured cost was about 0.1 W.
+
 ## Experimental extra refresh rates
 
 Qualcomm's DP debugfs (`/sys/kernel/debug/drm_dp/edid`, debugfs mounted on demand) accepts a
@@ -109,7 +130,9 @@ of 70, 75, 80, 85, 90, 100, 110, 120, 144 and 165 Hz:
 - only above what the monitor already offers at that resolution,
 - only up to the maximum vertical rate in the monitor's range limits,
 - only if pixel clock x 18 bits fits within 98 % of the live link (link rate x lanes x 8, read from
-  `dp_debug`).
+  `dp_debug`), or, with DSC on, pixel clock x 8 bits fits and pixel clock / slices stays within 96 %
+  of the monitor's decoder limit,
+- only rates the EDID does not already have at that resolution.
 
 Up to five rates go into a new DisplayID 1.2 extension block (type I timings), appended to the
 monitor's own EDID (its blocks are kept as they are; the extension count and checksum are updated).

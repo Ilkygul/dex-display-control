@@ -31,6 +31,12 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   80 Hz** on an LG 40U990A, which offers 60 Hz at most over this phone. Rates that do not fit at
   8-bit colour run at 6-bit. Remembered per monitor and applied again on every connection; the
   monitor reconnects by itself, nothing to unplug.
+- **Experimental: compression (DSC) per monitor.** The phone's display chip can compress the
+  picture (Display Stream Compression), but Samsung leaves it off. Switched on for a monitor that
+  supports it, 5120x2160 runs at **100 and 110 Hz in 10-bit colour** on an LG 40U990A. Together with
+  the extra rates the module stays within the monitor's decoder limit.
+- **Confirm or go back.** While an experimental option is on, a new mode must be confirmed within
+  30 seconds or the previous one comes back by itself, so a black monitor fixes itself.
 - **Repairs itself.** If a custom timing ever ends up on a monitor it was not made for, the module
   notices at connect and has the monitor read again with its own data, without unplugging.
 - **Soft-reboot fix.** On this phone a KernelSU soft reboot left the display composer unable to see
@@ -52,7 +58,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.2.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.3.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -69,6 +75,11 @@ override, gives the apps' frame clock back to the phone and wakes the phone scre
 - **Phone screen switch:** turn it on, and the phone screen goes off while DeX runs on the monitor.
   Press the side key to see the phone screen; when it turns off again (side key or timeout) it is
   kept off again.
+- **Experimental > Compression (DSC):** tap "Turn compression on for this monitor". The module
+  checks that the monitor supports DSC (about 15 s, one or two reconnects) and remembers it; on every
+  connection it is switched on again for that monitor and off for others.
+- **Keep this mode?** After choosing a mode with an experimental option on, a bar asks to keep it.
+  Without an answer the previous mode returns after 30 seconds (plus the reconnect time).
 - **Experimental > Extra refresh rates:** tap "Add extra refresh rates for this monitor". The module
   works out what fits, the monitor reconnects once (about 10 s), and the new rates appear in the list
   marked "6-bit" (or "added" when they fit at 8-bit). Pick one. From then on they are added on every
@@ -88,6 +99,8 @@ su -c "sh $M phone off"              # phone screen off, DeX keeps running
 su -c "sh $M phone-guard off"        # turn the keep-off switch off (escape route)
 su -c "sh $M inner-hz 60"            # phone screen refresh while connected (or: off)
 su -c "sh $M extra on"               # experimental extra refresh rates for this monitor (or: off)
+su -c "sh $M dsc on"                 # experimental compression (DSC) for this monitor (or: off)
+su -c "sh $M confirm"                # keep a new experimental mode (confirm back: undo now)
 ```
 
 Termux widget examples: [extras/termux](extras/termux).
@@ -102,7 +115,7 @@ from a shell turns the switch off; disabling the module in KernelSU Manager stop
 - **The DisplayPort link carries at most 17.28 Gbit/s of pixels.** The phone trains the link at
   HBR2 with 4 lanes (5.4 Gbit/s per lane, 8b/10b coding), and the kernel rejects any mode whose
   pixel clock x bits per pixel exceeds that. Samsung's driver always trains HBR2; HBR3 (8.1 Gbit/s
-  per lane) could not be enabled (debugfs accepts it but the link stays HBR2). DSC is off.
+  per lane) could not be enabled (debugfs accepts it but the link stays HBR2). DSC is off unless you switch it on (below).
   - 5120 x 2160 at 60 Hz fits at 8-bit colour (16.9 Gbit/s, 98 %): the most the LG 40U990A gets.
   - 4K at 60 Hz fits at 10-bit (16.0 Gbit/s); 1440p at 120 Hz at 10-bit (14.9 Gbit/s).
   - 5120 x 2160 at 80 Hz fits at 6-bit colour (16.9 Gbit/s, 98 %): the experimental extra rates.
@@ -110,7 +123,11 @@ from a shell turns the switch off; disabling the module in KernelSU Manager stop
   - The LG's own 85/100/120 Hz timings need 18.2/21.5/25.6 Gbit/s even at 6-bit, so the phone hides
     them; the module adds tighter ones that fit. The 4:2:0 4K 120 Hz mode was not offered either.
   - 4K at 75 Hz fits at 8-bit with a tight timing (15.7 Gbit/s), tested on the Dell U3225QE.
-  - More would need DSC compression, which Samsung keeps off (a debugfs switch exists; untried).
+  - **With DSC** (compressed to 8 bits per pixel on the link) the link is no longer the limit; the
+    monitor's DSC decoder is. The LG reports 340 Mpixel/s per slice and the phone uses 4 slices at
+    5120 wide: 110 Hz (323 per slice) works, the LG's own 120 Hz (355 per slice) leaves it black.
+  - Power, whole phone, still DeX screen: 60 Hz 2.03 W, 60 Hz with DSC 2.15 W, 80 Hz 6-bit 2.37 W,
+    110 Hz with DSC 3.04 W. DSC itself costs about 0.1 W; each extra Hz about 17 mW.
   - The device tree's 675 MHz pixel clock is not the real limit: the LG runs at 704 MHz.
 - **Hubs and docks can halve it.** If the link falls back to 2 lanes (seen once with a re-plug through
   a USB hub), only 8.64 Gbit/s is left and the high modes disappear. The status page shows the lanes;
@@ -123,7 +140,9 @@ from a shell turns the switch off; disabling the module in KernelSU Manager stop
   the phone uses the module's copy of the monitor's data (EDID), so a monitor that changes its own
   EDID while connected is not noticed until it reconnects. The custom EDID is written to Qualcomm's
   DisplayPort debugfs (mounted on demand).
-- **Not yet verified:** the extra rates on other monitors than the LG (the Dell 4K 75 Hz test used an
+- **Copy protection at too-fast modes:** at the LG's 120 Hz with DSC the copy-protection handshake
+  failed (and the picture was black). At 60-110 Hz with DSC it worked.
+- **Not yet verified:** DSC and the extra rates on other monitors than the LG (the Dell 4K 75 Hz test used an
   earlier timing), monitors that change their own EDID while connected (XREAL ultrawide), other
   phones. See [docs/TESTING.md](docs/TESTING.md).
 
