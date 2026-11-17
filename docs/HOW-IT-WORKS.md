@@ -90,22 +90,43 @@ module uses it for the experimental timing and its repair. It marks the window w
 start. Our own re-plugs are marked with `replug.busy` so the watcher does not treat them as unplugs.
 Writing `hpd` in Qualcomm's debugfs does nothing on Samsung's driver.
 
-## Experimental 4K 75 Hz
+## Bit depth
+
+Qualcomm's DP driver picks the deepest colour that fits the link, starting at the monitor's maximum
+(at most 30 bpp, `max_bpp` in debugfs) and stepping down by 6 to 18 bpp (6-bit). That is why 4K
+60 Hz runs at 10-bit, 5120x2160 at 60 Hz at 8-bit, and the extra 5120x2160 70-80 Hz rates at 6-bit.
+
+## Experimental extra refresh rates
 
 Qualcomm's DP debugfs (`/sys/kernel/debug/drm_dp/edid`, debugfs mounted on demand) accepts a
 replacement EDID as hex text; while one is set, the kernel uses it instead of reading the monitor.
-The module copies the monitor's EDID and replaces its serial-number (or dummy/text) descriptor with a
-3840x2160 timing at 655.35 MHz (the most a standard timing descriptor can hold): htotal 3920, vtotal
-2229, 75.0 Hz, 15.7 Gbit/s at 8-bit. It only does this for monitors that offer 4K 60 Hz and whose
-range limits allow 75 Hz and at least 656 MHz. Then a software re-plug applies it.
 
-Clearing it:
+The module picks the monitor's native timing: the largest detailed timing in its EDID, the one
+closest to 60 Hz (base block, CTA and DisplayID type I timings are all looked at; the LG lists
+3440x1440 first). It keeps that timing's blanking and sync and only raises the pixel clock, in steps
+of 70, 75, 80, 85, 90, 100, 110, 120, 144 and 165 Hz:
 
-- On Samsung's kernel, writing invalid hex to `edid` did **not** clear it (a Dell's 4K 75 Hz EDID
-  was later used for an LG). Writing a short valid string creates a 0-byte custom EDID - never do
-  that.
+- only above what the monitor already offers at that resolution,
+- only up to the maximum vertical rate in the monitor's range limits,
+- only if pixel clock x 18 bits fits within 98 % of the live link (link rate x lanes x 8, read from
+  `dp_debug`).
+
+Up to five rates go into a new DisplayID 1.2 extension block (type I timings), appended to the
+monitor's own EDID (its blocks are kept as they are; the extension count and checksum are updated).
+A software re-plug applies it. The DRM EDID parser reads type I timings from any DisplayID block.
+
+The 4K 75 Hz test on the Dell (v2.0/v2.1) used a different, tighter timing in the base block (655.35
+MHz, the most a base-block timing can hold). The new method can go beyond that clock because
+DisplayID timings have a 24-bit clock field.
+
+### Clearing it
+
+- On Samsung's kernel, writing invalid hex to `edid` did **not** clear it (a Dell's custom EDID was
+  later used for an LG). Writing a short valid string creates a 0-byte custom EDID - never do that.
 - What works: `echo 0 > drm_dp/sim` (debug sim off, which drops the custom EDID) while the output is
   off: with nothing connected, or between `ExtDispOff,1` and `ExtDispOff,0`.
 - The module remembers a checksum of the custom EDID it wrote. At every connect it compares the EDID
-  the kernel read: if it is the custom one and 4K 75 Hz is not active for this monitor, it clears it
-  with a software re-plug and checks again. So a leak is repaired by itself, without unplugging.
+  the kernel read: if it is the custom one and it is not meant for this monitor, it clears it with a
+  software re-plug and checks again. So a leak is repaired by itself, without unplugging.
+- When the rates are removed while one of them is in use, the composer override is pointed at the
+  native mode first: the LG prefers 3440x1440, so "no override" would land there.

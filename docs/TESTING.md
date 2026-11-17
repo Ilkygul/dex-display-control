@@ -43,7 +43,11 @@ Internet on DeX.
 | Software re-plug (`ExtDispOff,1` / `,0` on `/sys/class/dp_sec/dex`) | LG 40U990A | Link retrained, EDID read again, picture back in about 10 s; used by the module instead of a physical re-plug |
 | Custom EDID left from another monitor (Dell's 4K 75 Hz EDID shown on the LG) | LG 40U990A | Seen before v2.1.0 (clearing by writing invalid hex does not work on Samsung's kernel). v2.1.0: detected at connect and repaired automatically in 8 s (simulated with a marked EDID), 4 lanes and 5120x2160 at 60 kept |
 | Custom EDID active, then the monitor disconnects | LG 40U990A | Cleared while disconnected and verified at the next connect: monitor read with its own EDID |
-| 4K 75 Hz on a monitor without 4K 60 Hz | LG 40U990A | Refused with a clear message, nothing changed |
+| LG's own 85/100/120 Hz timings (DisplayID) | LG 40U990A | Not offered: 1009/1196/1420 MHz need 18.2/21.5/25.6 Gbit/s even at 6-bit; the link carries 17.28 |
+| Extra rates: LG's 60 Hz timing (htotal 5280, vtotal 2222) at a faster clock | LG 40U990A | 70/75/80 Hz offered; 80 Hz runs `938570Khz`, 18 bpp (6-bit), 4 x HBR2 at 98 %; DeX, apps (pacesetter) and the measured frame rate at 80 Hz; picture clean (checked on the monitor) |
+| Extra rates: turn on from the module | LG 40U990A | 8 s, rates worked out from the live link and the EDID's range limits (120 Hz max) |
+| Extra rates: monitor reconnects | LG 40U990A | Re-applied by itself, saved 80 Hz back after about 20 s |
+| Extra rates: remove while at 80 Hz | LG 40U990A | Back to 5120x2160 at 60 Hz, 8-bit, in one reconnect (the LG's preferred timing is 3440x1440, so the module sets the native mode instead of "no override") |
 | Phone screen refresh 30 Hz during DeX | Dell U3225QE | Works: SurfaceFlinger inner render 30 Hz; previous 120/120 restored on "Don't change" |
 | Keep phone screen off: unwanted wake | Dell U3225QE | `cmd power wakeup` while guarded: turned off again within 0.5 s |
 | Keep phone screen off: wake on purpose (`phone on`, Termux button) | Dell U3225QE | Stays on; guarded again after `phone off` |
@@ -63,6 +67,10 @@ Internet on DeX.
 
 ## Not yet tested
 
+- The extra rates on the Dell U3225QE and the XREAL glasses (the XREAL already offers its 120 Hz
+  maximum, so nothing would be added).
+- DSC compression (`dsc_feature_enable` / `fec_feature_enable` in debugfs, off by default): could fit
+  5120x2160 at 120 Hz in the link, risky, not tried.
 - XREAL "ultrawide" mode (a monitor that changes its own EDID without unplugging): handled in code
   (EDID checksum watch, per-variant profiles), not yet tried.
 - The soft-reboot composer restart as part of the module (it was tested as a stand-alone

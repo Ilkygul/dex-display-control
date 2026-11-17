@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.2.0 (2026-11-17)
+
+- Experimental extra refresh rates replace the 4K 75 Hz option: faster versions of the monitor's own
+  native mode, worked out from its EDID (range limits) and the live link, in an added DisplayID
+  block. Tested: LG 40U990A at 5120x2160 70/75/80 Hz (6-bit), clean picture at 80 Hz.
+- Remembered per monitor and applied again on every connection. `extra on|off` (`exp75` still works).
+- Removing the rates goes back to the native mode in one reconnect.
+- Mode commands wait for a reconnect in progress instead of failing on it.
+- Page: added rates are marked "6-bit" in the mode list.
+
 ## v2.1.0 (2026-11-17)
 
 - Experimental 4K 75 Hz without unplugging: the module re-plugs the monitor in software (Samsung's

@@ -20,7 +20,7 @@
 #   mode-set line (captured right after each connect: the ring buffer only holds ~90 s here).
 # - The phone's own screens are power group 0, the external display its own group, so
 #   `cmd power sleep --display-id 0` darkens only the phone and DeX keeps running without a lock.
-# - Experimental 4K 75 Hz: Qualcomm's DP debugfs takes a replacement EDID (drm_dp/edid, hex text) and
+# - Experimental extra refresh rates: Qualcomm's DP debugfs takes a replacement EDID (drm_dp/edid, hex text) and
 #   uses it at the next hotplug - for whatever monitor that is; while it is set the kernel does not
 #   read the monitor's own EDID at all. Samsung's dp_sec "ExtDispOff,1" / "ExtDispOff,0" (written to
 #   /sys/class/dp_sec/dex) switches the DP output off and on again, which is a full hotplug in software
@@ -159,6 +159,13 @@ reconnect() {
     rm -f "$BASE/replug.busy"
 }
 
+# Commands wait (up to 20 s) while a reconnect of ours is in progress, instead of failing on it.
+settle() {
+    i=0
+    while [ -f "$BASE/replug.busy" ] && [ "$i" -lt 20 ]; do sleep 1; i=$((i + 1)); done
+    connected && wait_sf >/dev/null
+}
+
 pace_now() {
     sid=$(ext_sf_id)
     [ -n "$sid" ] || return 1
@@ -225,6 +232,8 @@ status() {
     [ "$d1" = On ] || [ "$d2" = On ] && echo "phone=on" || echo "phone=off"
     [ -f "$BASE/guard.armed" ] && echo "armed=1" || echo "armed=0"
     [ -f "$BASE/custom.active" ] && { read -r ca < "$BASE/custom.active"; echo "custom=active:$ca"; }
+    [ -f "$BASE/extra.modes" ] && { read -r xm < "$BASE/extra.modes"; echo "extra_modes=$xm"; }
+    [ -d "$EXTRA" ] && for f in "$EXTRA"/*; do [ -f "$f" ] && echo "extra_on=${f##*/}"; done
     if ! connected; then
         echo "connected=0"
         return 0
@@ -305,6 +314,7 @@ EOF
 set_mode() {
     key=$1
     valid "$key:1" || { echo "error=Invalid mode: $key"; return 1; }
+    settle
     connected || { echo "error=No external display connected"; return 1; }
     id=$(edid_id)
     [ -n "$id" ] || { echo "error=Cannot identify the monitor (no EDID)"; return 1; }
@@ -322,6 +332,7 @@ set_mode() {
 }
 
 reset_mode() {
+    settle
     connected || { echo "error=No external display connected"; return 1; }
     id=$(edid_id)
     rm -f "$PROF/$id-$(variant)" "$PROF/$id"
@@ -489,7 +500,7 @@ inner_cmd() {
     esac
 }
 
-# ---- Experimental: 4K 75 Hz through a custom EDID timing ------------------------------------
+# ---- Custom EDID (experimental extra refresh rates) ----------------------------------------
 
 debugfs_up() {
     [ -e "$DBG/edid" ] && return 0
@@ -530,18 +541,39 @@ custom_clear() {
     rm -f "$BASE/custom.active"
     if connected; then
         log "clearing the custom EDID (software re-plug)"
+        pr=$(getprop $PROP); pr=${pr%:1}
+        if [ -n "$pr" ] && [ -f "$BASE/extra.modes" ]; then
+            read -r xm < "$BASE/extra.modes"
+            # The monitor's own data does not have it: go to the native mode the rates were made from
+            # (not "no override": some monitors, like the LG 40U990A, prefer a smaller mode).
+            nb=""; read -r nb 2>/dev/null < "$BASE/extra.base"
+            case " $xm " in
+                *" $pr:"*)
+                    setprop $PROP "${nb:+$nb:1}"
+                    # DeX's preferred mode too, so the reconnect below is the only one.
+                    sid=$(ext_sf_id); dmid=""; [ -n "$sid" ] && dmid=$(dm_id "$sid")
+                    if [ -n "$nb" ] && [ -n "$dmid" ]; then
+                        IFS=: read -r w hh hz <<EOF
+$nb
+EOF
+                        dm_set "$dmid" "$w" "$hh" "$hz"
+                    fi
+                    log "override $pr exists only in the custom EDID; now '${nb:-none}'" ;;
+            esac
+        fi
         hw_replug sim_off
-        read -r want < "$BASE/custom.sum"
-        if [ "$(edid_hex | cksum)" = "$want" ]; then
+        want=""; read -r want 2>/dev/null < "$BASE/custom.sum"
+        if [ -n "$want" ] && [ "$(edid_hex | cksum)" = "$want" ]; then
             # Still ours: keep custom.sum, so the next connect tries again.
             log "custom EDID still in effect after clearing; will retry on the next connect"
             return 1
         fi
-        rm -f "$BASE/custom.sum"
+        rm -f "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base"
         log "custom EDID cleared; monitor read with its own EDID"
     else
         # Nothing to read now: keep custom.sum, the next connect checks what the monitor sends.
         sim_off
+        rm -f "$BASE/extra.modes" "$BASE/extra.base"
         log "custom EDID cleared (checked again at the next connect)"
     fi
 }
@@ -553,7 +585,7 @@ custom_on_disconnect() { custom_clear; }
 # so the caller re-reads the monitor.
 custom_on_connect() {
     [ -f "$BASE/custom.sum" ] || return 0
-    read -r want < "$BASE/custom.sum"
+    want=""; read -r want 2>/dev/null < "$BASE/custom.sum"
     got=$(edid_hex | cksum)
     if [ "$got" = "$want" ]; then
         [ -f "$BASE/custom.active" ] && return 0
@@ -562,66 +594,205 @@ custom_on_connect() {
         return 1
     fi
     # The monitor's own EDID was read: nothing custom in effect.
-    rm -f "$BASE/custom.sum" "$BASE/custom.active"
+    rm -f "$BASE/custom.sum" "$BASE/custom.active" "$BASE/extra.modes" "$BASE/extra.base"
     return 0
 }
 
-# Make the 4K 75 Hz EDID from the connected monitor's real one: a CVT-RB style timing (htotal 3920,
-# vtotal 2229, 655.35 MHz - the most a standard timing descriptor can hold) replaces the serial
-# number, dummy or text descriptor. Prints the hex, or nothing if the monitor does not qualify.
-make_75() {
-    h=$(edid_hex)
-    [ "${#h}" -ge 256 ] || return 1
-    # Needs 4K60 today, and a range limit (descriptor 0xfd) allowing 75 Hz and >= 656 MHz.
-    case " $(offered)" in *" 3840:2160:60 "*) ;; *) return 1 ;; esac
-    slot=""; ok75=0
-    for o in 54 72 90 108; do
-        d=${h:$((o * 2)):36}
-        case "$d" in
-            000000fd*)
-                fl=$((0x${d:8:2})); vmax=$((0x${d:12:2})); pmax=$((0x${d:18:2}))
-                [ $((fl & 2)) -ne 0 ] && vmax=$((vmax + 255))
-                [ "$vmax" -ge 75 ] && [ $((pmax * 10)) -ge 656 ] && ok75=1 ;;
-            000000ff*|00000010*|000000fe*) [ -z "$slot" ] && slot=$o ;;
-        esac
-    done
-    [ "$ok75" = 1 ] && [ -n "$slot" ] || return 1
-    # Physical size from the first timing descriptor (bytes 12-14).
-    mm=${h:132:6}
-    # 18 bytes: pclk ffff (655.35 MHz) | hact 3840 / hblank 80 (00 50 f0) | vact 2160 / vblank 69
-    # (70 45 80) | hfp 8, hsw 32 (08 20) | vfp 55, vsw 8 (78 0c) | size | no border | digital
-    # separate sync, H+ V- (1a). Same bytes as the EDID tested on the Dell U3225QE (2026-11-17).
-    dtd="ffff0050f07045800820780c${mm}00001a"
-    new="${h:0:$((slot * 2))}$dtd${h:$((slot * 2 + 36))}"
-    sum=0; i=0
-    while [ "$i" -lt 127 ]; do sum=$((sum + 0x${new:$((i * 2)):2})); i=$((i + 1)); done
-    ck=$(printf '%02x' $(((256 - sum % 256) % 256)))
-    echo "${new:0:254}$ck${new:256}"
+# ---- Extra refresh rates ----------------------------------------------------------------------
+# The monitor's native timing (largest detailed timing in its EDID, the one closest to 60 Hz; base
+# block, CTA and DisplayID timings are all looked at) run with a faster pixel clock:
+# same blanking, so only the refresh rate changes. Steps above what the monitor already offers at
+# that resolution, up to its own maximum vertical rate (range limits), and only if it fits the live
+# link at 6-bit colour with 2 % headroom; the kernel picks the highest bit depth that fits (30, 24
+# or 18 bpp). Up to five rates go into an added DisplayID extension block (type I timings), so the
+# monitor's own data stays as it is. Tested: LG 40U990A 5120x2160 at 70/75/80 Hz (18 bpp), 2026-11-17.
+# Remembered per monitor in $EXTRA/<id> and applied again on every connect.
+EXTRA=$BASE/extra
+HZ_STEPS="70 75 80 85 90 100 110 120 144 165"
+
+# Link payload as the kernel counts it (kHz x bits): link rate x lanes x 8.
+link_cap() {
+    # dp_debug answers a single read only (the shell's read builtin reads byte by byte): use cat.
+    lr=""; ln=""
+    while IFS='=' read -r k v; do
+        case "$k" in *link_rate) lr=$v ;; *num_lanes) ln=$v ;; esac
+    done <<EOF
+$(cat "$DBG/dp_debug" 2>/dev/null)
+EOF
+    [ -n "$lr" ] && [ -n "$ln" ] && [ "$ln" -gt 0 ] && echo $((lr * ln * 8))
 }
 
-exp75_cmd() {
+by() { eval "$1=\$((0x\${h:$(($2 * 2)):2}))"; }
+le16() { printf '%02x%02x' $(($1 & 255)) $((($1 >> 8) & 255)); }
+# Detailed timing (18 bytes, EDID/CTA) at byte $1 -> ha hb hfp hsw va vb vfp vsw hp vp pk (kHz).
+dtd_at() {
+    by a $1; by b $(($1 + 1)); pk=$(((a | b << 8) * 10)); [ "$pk" -gt 0 ] || return 1
+    by a $(($1 + 2)); by b $(($1 + 3)); by c $(($1 + 4)); ha=$((a | (c >> 4) << 8)); hb=$((b | (c & 15) << 8))
+    by a $(($1 + 5)); by b $(($1 + 6)); by c $(($1 + 7)); va=$((a | (c >> 4) << 8)); vb=$((b | (c & 15) << 8))
+    by a $(($1 + 8)); by b $(($1 + 9)); by c $(($1 + 10)); by d $(($1 + 11))
+    hfp=$((a | ((d >> 6) & 3) << 8)); hsw=$((b | ((d >> 4) & 3) << 8))
+    vfp=$(((c >> 4) | ((d >> 2) & 3) << 4)); vsw=$(((c & 15) | (d & 3) << 4))
+    by fl $(($1 + 17)); hp=0; vp=0
+    [ $((fl & 0x18)) -eq 24 ] && { [ $((fl & 2)) -ne 0 ] && hp=32768; [ $((fl & 4)) -ne 0 ] && vp=32768; }
+    return 0
+}
+
+w16() { by lo $2; by hi $(($2 + 1)); eval "$1=\$(($lo | $hi << 8))"; }
+
+# DisplayID type I timing (20 bytes) at byte $1 -> same variables.
+did_at() {
+    by a $1; by b $(($1 + 1)); by c $(($1 + 2)); pk=$((((a | b << 8 | c << 16) + 1) * 10))
+    w16 ha $(($1 + 4)); w16 hb $(($1 + 6)); w16 hfp $(($1 + 8)); w16 hsw $(($1 + 10))
+    w16 va $(($1 + 12)); w16 vb $(($1 + 14)); w16 vfp $(($1 + 16)); w16 vsw $(($1 + 18))
+    hp=$((hfp & 32768)); vp=$((vfp & 32768))
+    ha=$((ha + 1)); hb=$((hb + 1)); hfp=$(((hfp & 32767) + 1)); hsw=$((hsw + 1))
+    va=$((va + 1)); vb=$((vb + 1)); vfp=$(((vfp & 32767) + 1)); vsw=$((vsw + 1))
+}
+
+# Keep the timing just parsed if it beats the best so far: larger area, then closer to 60 Hz.
+consider() {
+    [ "$hfp" -gt 0 ] && [ "$hsw" -gt 0 ] && [ "$vsw" -gt 0 ] && [ "$ha" -gt 0 ] && [ "$va" -gt 0 ] || return
+    fr=$(((ha + hb) * (va + vb)))
+    hz10=$((pk * 10 / (fr / 1000)))
+    [ "$hz10" -ge 500 ] || return
+    ar=$((ha * va)); sc=$((hz10 > 600 ? hz10 - 600 : 600 - hz10))
+    if [ "$ar" -gt "$best_ar" ] || { [ "$ar" -eq "$best_ar" ] && [ "$sc" -lt "$best_sc" ]; }; then
+        best_ar=$ar; best_sc=$sc; best="$ha $hb $hfp $hsw $va $vb $vfp $vsw $hp $vp"; best_hz=$(((hz10 + 5) / 10))
+    fi
+}
+
+cks() { s=0; i=0; while [ "$i" -lt "${#1}" ]; do s=$((s + 0x${1:$i:2})); i=$((i + 2)); done; printf '%02x' $(((256 - s % 256) % 256)); }
+
+# Writes $BASE/extra.hex (the new EDID) and $BASE/extra.modes ("W:H:HZ:BPP ..."); 1 if nothing fits.
+# mksh arithmetic is 32-bit, hence the divisions before multiplying.
+make_extra() {
+    h=$(edid_hex)
+    [ "${#h}" -ge 256 ] || return 1
+    by n 126
+    [ "$n" -le 6 ] && [ "${#h}" -eq $(((n + 1) * 256)) ] || return 1
+    best=""; best_ar=0; best_sc=99999
+    for o in 54 72 90 108; do dtd_at $o && consider; done
+    e=1
+    while [ "$e" -le "$n" ]; do
+        eb=$((e * 128)); by tag $eb
+        if [ "$tag" = 2 ]; then
+            by d $((eb + 2)); o=$((eb + d))
+            [ "$d" -ge 4 ] && while [ $((o + 18)) -le $((eb + 127)) ]; do dtd_at $o && consider; o=$((o + 18)); done
+        elif [ "$tag" = 112 ]; then
+            by sl $((eb + 2)); i=$((eb + 5)); end=$((eb + 5 + sl))
+            [ "$end" -le $((eb + 127)) ] || end=$((eb + 127))
+            while [ $((i + 3)) -le "$end" ]; do
+                by bt $i; by bl $((i + 2))
+                if [ "$bt" = 3 ]; then
+                    t=$((i + 3)); while [ $((t + 20)) -le $((i + 3 + bl)) ]; do did_at $t; consider; t=$((t + 20)); done
+                fi
+                i=$((i + 3 + bl))
+            done
+        fi
+        e=$((e + 1))
+    done
+    [ -n "$best" ] || return 1
+    set -- $best
+    ha=$1; hb=$2; hfp=$3; hsw=$4; va=$5; vb=$6; vfp=$7; vsw=$8; hp=$9; vp=${10}
+    frame=$(((ha + hb) * (va + vb)))
+    # Deepest colour the monitor takes (EDID 1.4 byte 20), and its maximum vertical rate.
+    by e 20; maxb=24
+    case $(((e >> 4) & 7)) in 1) maxb=18 ;; 2) maxb=24 ;; 3|4|5|6) maxb=30 ;; esac
+    vmax=0
+    for o in 72 90 108; do
+        case "${h:$((o * 2)):8}" in
+            000000fd) by f $((o + 4)); by v $((o + 6)); [ $((f & 2)) -ne 0 ] && v=$((v + 255)); vmax=$v ;;
+        esac
+    done
+    [ "$vmax" -gt 0 ] || vmax=120
+    top=0
+    for k in $(offered); do case "$k" in "$ha:$va:"*) z=${k##*:}; [ "$z" -gt "$top" ] && top=$z ;; esac; done
+    cap=$(link_cap); [ -n "$cap" ] || cap=17280000
+    list=""
+    for hz in $HZ_STEPS; do
+        [ "$hz" -gt "$top" ] && [ "$hz" -le "$vmax" ] || continue
+        khz=$((frame / 100 * hz / 10))
+        [ $((khz * 18)) -le $((cap / 100 * 98)) ] || continue
+        bpp=18
+        for t in 24 30; do [ "$t" -le "$maxb" ] && [ $((khz * t)) -le "$cap" ] && bpp=$t; done
+        list="$list $hz:$bpp"
+    done
+    set -- $list
+    while [ "$#" -gt 5 ]; do shift; done
+    [ "$#" -gt 0 ] || return 1
+    asp=00
+    [ $((ha * 9)) -eq $((va * 16)) ] && asp=04
+    [ $((ha * 10)) -eq $((va * 16)) ] && asp=05
+    [ $((ha * 27)) -eq $((va * 64)) ] && asp=06
+    tim=""; modes=""
+    for m in "$@"; do
+        hz=${m%:*}
+        p=$((frame / 100 * hz / 100 - 1))
+        tim="$tim$(printf '%02x%02x%02x' $((p & 255)) $(((p >> 8) & 255)) $(((p >> 16) & 255)))$asp"
+        tim="$tim$(le16 $((ha - 1)))$(le16 $((hb - 1)))$(le16 $(((hfp - 1) | hp)))$(le16 $((hsw - 1)))"
+        tim="$tim$(le16 $((va - 1)))$(le16 $((vb - 1)))$(le16 $(((vfp - 1) | vp)))$(le16 $((vsw - 1)))"
+        modes="$modes $ha:$va:$m"
+    done
+    nb=$(($# * 20))
+    sec="12$(printf '%02x' $((nb + 3)))0300"0300$(printf '%02x' $nb)$tim
+    blk="70$sec$(cks "$sec")"
+    while [ "${#blk}" -lt 254 ]; do blk="${blk}00"; done
+    blk="$blk$(cks "$blk")"
+    b0="${h:0:252}$(printf '%02x' $((n + 1)))"
+    b0="$b0$(cks "$b0")"
+    echo "$b0${h:256}$blk" > "$BASE/extra.hex"
+    echo "${modes# }" > "$BASE/extra.modes"
+    echo "$ha:$va:$best_hz" > "$BASE/extra.base"
+}
+
+# Build, write and apply for monitor $1. 0 = at least one extra rate offered now; 1 = none fits;
+# 2 = no debugfs; 3 = the kernel took none of them (cleared again).
+extra_apply() {
+    make_extra || return 1
+    debugfs_up || return 2
+    read -r x < "$BASE/extra.hex"
+    printf '%s' "$x" > "$DBG/edid" || return 2
+    printf '%s' "$x" | cksum > "$BASE/custom.sum"
+    echo "$1" > "$BASE/custom.active"
+    read -r xm < "$BASE/extra.modes"
+    log "extra refresh rates for $1 ($xm); software re-plug"
+    hw_replug
+    have=" $(offered)"; got=""
+    for m in $xm; do case "$have" in *" ${m%:*} "*) got="$got ${m%:*}" ;; esac; done
+    [ -n "$got" ] && { log "offered now:$got"; return 0; }
+    log "none of the extra rates was accepted; back to the monitor's own EDID"
+    custom_clear
+    return 3
+}
+
+# Watcher, on connect: re-apply for a monitor that has extra rates switched on.
+extra_auto() {
+    id=$(edid_id)
+    [ -n "$id" ] && [ -f "$EXTRA/$id" ] && [ ! -f "$BASE/custom.active" ] || return 0
+    log "$id: extra refresh rates are on for this monitor; applying"
+    extra_apply "$id"
+}
+
+extra_cmd() {
+    settle
     connected || { echo "error=No external display connected"; return 1; }
+    id=$(edid_id)
     case "$1" in
         on)
-            case " $(offered)" in *" 3840:2160:75 "*) echo "ok=1"; return ;; esac
-            x=$(make_75)
-            [ -n "$x" ] || { echo "error=This monitor does not qualify (needs 4K 60 Hz and a range up to 75 Hz)"; return 1; }
-            debugfs_up || { echo "error=Qualcomm DisplayPort debugfs not available"; return 1; }
-            id=$(edid_id)
-            printf '%s' "$x" > "$DBG/edid" || { echo "error=Could not write the custom EDID"; return 1; }
-            printf '%s' "$x" | cksum > "$BASE/custom.sum"
-            echo "$id" > "$BASE/custom.active"
-            log "custom 4K 75 Hz EDID for $id; software re-plug"
-            hw_replug
-            case " $(offered)" in
-                *" 3840:2160:75 "*) log "4K 75 Hz available"; echo "ok=1" ;;
-                *) log "4K 75 Hz not accepted; back to the monitor's own EDID"; custom_clear
-                   echo "error=The monitor did not accept the 4K 75 Hz timing" ;;
+            mkdir -p "$EXTRA"
+            [ -f "$BASE/custom.active" ] && { touch "$EXTRA/$id"; echo "ok=1"; return; }
+            extra_apply "$id"
+            case $? in
+                0) touch "$EXTRA/$id"; echo "ok=1" ;;
+                1) echo "error=No higher refresh rate fits this monitor and the link (or its EDID has no usable timing)" ;;
+                2) echo "error=Qualcomm DisplayPort debugfs not available" ;;
+                *) echo "error=The phone did not accept the extra rates for this monitor" ;;
             esac ;;
         off)
+            rm -f "$EXTRA/$id"
             custom_clear
             echo "ok=1" ;;
-        *) echo "error=use: exp75 on|off" ;;
+        *) echo "error=use: extra on|off" ;;
     esac
 }
 
@@ -650,6 +821,7 @@ watch() {
                 sum=$(cksum < $CONN/edid 2>/dev/null)
                 wait_sf >/dev/null
                 custom_on_connect || wait_sf >/dev/null
+                extra_auto
                 on_connect
                 pace
                 inner_apply
@@ -697,14 +869,14 @@ case "$1" in
     phone-guard) guard_cmd "$2" ;;
     guard-run) guard_run ;;
     inner-hz) inner_cmd "$2" ;;
-    exp75) exp75_cmd "$2" ;;
+    extra|exp75) extra_cmd "$2" ;;
     watch) tail -n 300 "$LOG" > "$LOG.trim" 2>/dev/null && mv -f "$LOG.trim" "$LOG"; watch ;;
     boot)
         # A fresh kernel has no custom EDID and no running guard.
-        rm -f "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | exp75 on|off | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | watch | boot" ;;
 esac

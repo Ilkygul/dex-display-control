@@ -26,9 +26,11 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   command do. The switch is remembered and can always be turned off, also with no monitor attached.
 - **Phone screen refresh rate during DeX** (120, 80, 60, 48, 30 or 20 Hz), restored when you unplug.
   Your own refresh rate settings (including ones set by other apps) are saved and put back.
-- **Experimental: 4K at 75 Hz** on 4K monitors that accept it, through a custom timing that stays
-  within the phone's limits (see [Limits](#limits)). Turned on and off from the page; the monitor
-  reconnects by itself, nothing to unplug.
+- **Experimental: extra refresh rates.** Adds faster versions of the monitor's own native mode, as
+  far as the phone's link allows (see [Limits](#limits)): for example **5120x2160 at 70, 75 and
+  80 Hz** on an LG 40U990A, which offers 60 Hz at most over this phone. Rates that do not fit at
+  8-bit colour run at 6-bit. Remembered per monitor and applied again on every connection; the
+  monitor reconnects by itself, nothing to unplug.
 - **Repairs itself.** If a custom timing ever ends up on a monitor it was not made for, the module
   notices at connect and has the monitor read again with its own data, without unplugging.
 - **Soft-reboot fix.** On this phone a KernelSU soft reboot left the display composer unable to see
@@ -50,7 +52,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.1.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.2.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -67,9 +69,12 @@ override, gives the apps' frame clock back to the phone and wakes the phone scre
 - **Phone screen switch:** turn it on, and the phone screen goes off while DeX runs on the monitor.
   Press the side key to see the phone screen; when it turns off again (side key or timeout) it is
   kept off again.
-- **Experimental > 4K at 75 Hz:** tap "Activate 4K 75 Hz for this monitor". The monitor reconnects
-  once (about 15 s), then pick 3840 x 2160 @ 75 Hz. "Turn 4K 75 Hz off" or unplugging ends it; turn it
-  on again after the next connection if you want it.
+- **Experimental > Extra refresh rates:** tap "Add extra refresh rates for this monitor". The module
+  works out what fits, the monitor reconnects once (about 10 s), and the new rates appear in the list
+  marked "6-bit" (or "added" when they fit at 8-bit). Pick one. From then on they are added on every
+  connection of that monitor (one extra reconnect). "Remove extra refresh rates" goes back to the
+  monitor's own data and its native mode. If the monitor stays black on an added rate, pick another
+  rate or remove them.
 
 ### Commands (root shell, Termux with root, adb)
 
@@ -82,7 +87,7 @@ su -c "sh $M phone on"               # wake the phone screen on purpose
 su -c "sh $M phone off"              # phone screen off, DeX keeps running
 su -c "sh $M phone-guard off"        # turn the keep-off switch off (escape route)
 su -c "sh $M inner-hz 60"            # phone screen refresh while connected (or: off)
-su -c "sh $M exp75 on"               # experimental 4K 75 Hz for the connected monitor (or: off)
+su -c "sh $M extra on"               # experimental extra refresh rates for this monitor (or: off)
 ```
 
 Termux widget examples: [extras/termux](extras/termux).
@@ -100,20 +105,26 @@ from a shell turns the switch off; disabling the module in KernelSU Manager stop
   per lane) could not be enabled (debugfs accepts it but the link stays HBR2). DSC is off.
   - 5120 x 2160 at 60 Hz fits at 8-bit colour (16.9 Gbit/s, 98 %): the most the LG 40U990A gets.
   - 4K at 60 Hz fits at 10-bit (16.0 Gbit/s); 1440p at 120 Hz at 10-bit (14.9 Gbit/s).
-  - 4K at 75 Hz fits at 8-bit with a tight timing (15.7 Gbit/s): the experimental option.
-  - 4K at 90 Hz (19.5), 4K at 120 Hz (26.4) and 5K2K above 60 Hz need more than the link has, even
-    at 8-bit. The 4:2:0 4K 120 Hz mode in the LG's EDID was not offered by the phone.
+  - 5120 x 2160 at 80 Hz fits at 6-bit colour (16.9 Gbit/s, 98 %): the experimental extra rates.
+    The kernel drops to 6-bit (18 bpp) by itself when 8-bit does not fit.
+  - The LG's own 85/100/120 Hz timings need 18.2/21.5/25.6 Gbit/s even at 6-bit, so the phone hides
+    them; the module adds tighter ones that fit. The 4:2:0 4K 120 Hz mode was not offered either.
+  - 4K at 75 Hz fits at 8-bit with a tight timing (15.7 Gbit/s), tested on the Dell U3225QE.
+  - More would need DSC compression, which Samsung keeps off (a debugfs switch exists; untried).
   - The device tree's 675 MHz pixel clock is not the real limit: the LG runs at 704 MHz.
 - **Hubs and docks can halve it.** If the link falls back to 2 lanes (seen once with a re-plug through
   a USB hub), only 8.64 Gbit/s is left and the high modes disappear. The status page shows the lanes;
   re-plugging directly brings 4 lanes back.
 - **Switching modes needs a short reconnect.** SurfaceFlinger never changes an external display's
   mode after it connects, so every change reconnects the display.
-- **Experimental 4K 75 Hz** uses 8-bit colour (10-bit at 4K 60 Hz) and a slightly shorter vertical
-  blanking than the CVT standard (412 us). It worked cleanly on the Dell U3225QE; other monitors may
-  reject it, and then the module goes back to the monitor's own data by itself. The custom EDID is
-  written to Qualcomm's DisplayPort debugfs (mounted on demand).
-- **Not yet verified:** monitors that change their own EDID while connected (XREAL ultrawide), other
+- **Experimental extra rates** keep the monitor's own native timing and only raise the pixel clock,
+  up to the monitor's stated maximum refresh rate. The LG 40U990A showed a clean picture at 80 Hz;
+  other monitors may not accept a given rate (then pick another, or remove them). While they are on,
+  the phone uses the module's copy of the monitor's data (EDID), so a monitor that changes its own
+  EDID while connected is not noticed until it reconnects. The custom EDID is written to Qualcomm's
+  DisplayPort debugfs (mounted on demand).
+- **Not yet verified:** the extra rates on other monitors than the LG (the Dell 4K 75 Hz test used an
+  earlier timing), monitors that change their own EDID while connected (XREAL ultrawide), other
   phones. See [docs/TESTING.md](docs/TESTING.md).
 
 ## License

@@ -95,9 +95,9 @@
 
 <details class="card" id="expCard">
   <summary>Experimental</summary>
-  <div>4K at 75 Hz (custom timing)</div>
-  <div class="hint">Adds a 3840 × 2160 @ 75 Hz mode for 4K monitors that accept it (8-bit colour, within the link's 17.28 Gbit/s). Tested on a Dell U3225QE. The monitor reconnects once by itself; nothing to unplug. It ends when you turn it off or unplug the monitor, and every other monitor is always read with its own data.</div>
-  <button class="wide" id="expBtn">Activate 4K 75 Hz for this monitor</button>
+  <div>Extra refresh rates (custom timings)</div>
+  <div class="hint">Adds faster versions of the monitor's own native mode, as far as the phone's link (17.28 Gbit/s) allows and never above the monitor's stated maximum. Example: 5120 × 2160 at 70, 75 and 80 Hz on an LG 40U990A (tested, clean picture). Rates that don't fit at 8-bit colour run at 6-bit: fine for most use, some banding in smooth gradients is possible. Remembered for this monitor and applied again at every connection (one extra reconnect, about 10 s). Other monitors are always read with their own data. If the monitor stays black on an added rate, pick another rate or remove them here.</div>
+  <button class="wide" id="expBtn">Add extra refresh rates for this monitor</button>
   <div class="hint" id="expState" style="margin-top:8px"></div>
   <div class="msg" id="expMsg"></div>
 </details>
@@ -107,7 +107,7 @@
   <dl class="facts" id="tech" style="margin-top:4px"></dl>
   <p><b>Refresh rate</b> and <b>resolution</b> at the top are the mode the display engine drives the cable with (SurfaceFlinger). <b>Link timing</b>, <b>DP link</b>, <b>Link utilisation</b> and <b>Pixel clock</b> come from the line the kernel writes when the monitor connects, so they change only at the next (re)connection. The monitor's name and EDID are read from the connector on every refresh.</p>
   <p><b>Frames per second</b> counts the frames SurfaceFlinger composed for the monitor since the previous refresh. It drops when nothing on screen changes; with motion (scrolling, video, testufo.com) it should match the refresh rate.</p>
-  <p><b>Link utilisation</b> is pixel clock × bits per pixel against what the link carries after 8b/10b coding. The phone always trains the link at HBR2 with 4 lanes: 17.28 Gbit/s of pixel data. That is the real ceiling: 5120 × 2160 @ 60 Hz and 4K @ 75 Hz only fit at 8-bit colour, and 4K @ 90 Hz or more does not fit at all. If the lanes drop to 2 (some hubs), half is left.</p>
+  <p><b>Link utilisation</b> is pixel clock × bits per pixel against what the link carries after 8b/10b coding. The phone always trains the link at HBR2 with 4 lanes: 17.28 Gbit/s of pixel data. That is the real ceiling: 5120 × 2160 @ 60 Hz only fits at 8-bit colour; 5120 × 2160 @ 80 Hz fits at 6-bit (the kernel picks the deepest colour that fits). If the lanes drop to 2 (some hubs), half is left.</p>
   <p>This page only measures while it is open and visible: once a second, about 50 ms of work each time. Closed, it costs nothing. The background watcher reads one file every 3 seconds.</p>
 </details>
 
@@ -126,17 +126,20 @@
   }
 
   function parse(out) {
-    const s = { modes: [], profiles: {} };
+    const s = { modes: [], profiles: {}, extraOn: [] };
     for (const line of out.split("\n")) {
       const i = line.indexOf("="); if (i < 0) continue;
       const k = line.slice(0, i), v = line.slice(i + 1).trim();
       if (k === "mode") { if (!s.modes.includes(v)) s.modes.push(v); }
+      else if (k === "extra_on") s.extraOn.push(v);
       else if (k === "profile") { const j = v.indexOf(":"); s.profiles[v.slice(0, j)] = v.slice(j + 1); }
       else s[k] = v;
     }
     s.id = (s.edid || "").slice(16, 32);
     s.saved = s.profiles[s.id + "-" + s.variant] || s.profiles[s.id] || "";
     s.edidName = edidName(s.edid || "");
+    s.extraBpp = {};
+    for (const m of (s.extra_modes || "").split(" ")) { const p = m.split(":"); if (p.length === 4) s.extraBpp[p.slice(0, 3).join(":")] = +p[3]; }
     s.kern = null;
     if (s.link) {
       const bar = s.link.indexOf("|"), lid = s.link.slice(0, bar), l = s.link.slice(bar + 1);
@@ -218,14 +221,17 @@
 
   function renderExp(s) {
     const btn = el("expBtn"), st = el("expState");
-    const active = (s.custom || "").startsWith("active:");
-    const has75 = s.modes.some((m) => keyOf(m) === "3840:2160:75");
-    const has4k60 = s.modes.some((m) => keyOf(m) === "3840:2160:60");
-    btn.textContent = active ? "Turn 4K 75 Hz off" : "Activate 4K 75 Hz for this monitor";
-    btn.disabled = busy || s.connected !== "1" || (!active && !has4k60);
-    if (s.connected !== "1") { st.textContent = "Connect a 4K monitor to use this."; return; }
-    if (active && has75) { st.innerHTML = '<span class="okc">Active: 3840 × 2160 @ 75 Hz is available above.</span>'; return; }
-    st.textContent = has4k60 ? "Not active." : "This monitor does not offer 4K 60 Hz, so 4K 75 Hz does not apply.";
+    const on = s.extraOn.includes(s.id), keys = Object.keys(s.extraBpp);
+    btn.textContent = on ? "Remove extra refresh rates" : "Add extra refresh rates for this monitor";
+    btn.disabled = busy || s.connected !== "1";
+    if (s.connected !== "1") { st.textContent = "Connect a monitor to use this."; return; }
+    if (keys.length) {
+      const res = keys[0].split(":").slice(0, 2).join("x");
+      const list = keys.map((k) => k.split(":")[2] + " Hz" + (s.extraBpp[k] <= 18 ? " (6-bit)" : "")).join(", ");
+      st.innerHTML = '<span class="okc">On: ' + list + " added for " + pretty(res) + ".</span>";
+      return;
+    }
+    st.textContent = on ? "On for this monitor; applied at the next connection." : "Off.";
   }
 
   function render(s) {
@@ -295,7 +301,7 @@
         const key = keyOf(m); if (seen.has(key)) continue; seen.add(key);
         const b = document.createElement("button");
         b.className = "chip" + (key === currentKey ? " active" : "") + (key === savedKey ? " saved" : "");
-        b.textContent = hzOf(m) + " Hz"; b.disabled = busy;
+        b.textContent = hzOf(m) + " Hz" + (s.extraBpp[key] ? (s.extraBpp[key] <= 18 ? " · 6-bit" : " · added") : ""); b.disabled = busy;
         b.onclick = () => apply(key, fmtKey(key), key === currentKey, false);
         chips.appendChild(b);
       }
@@ -373,13 +379,13 @@
   }
 
   el("expBtn").onclick = async () => {
-    const active = last && (last.custom || "").startsWith("active:");
+    const on = last && last.extraOn.includes(last.id);
     busy = true; render(last);
-    setMsg("expMsg", active ? "Turning 4K 75 Hz off. The monitor reconnects…" : "Adding 4K 75 Hz. The monitor reconnects…");
-    const out = parse((await run("sh " + SCRIPT + " exp75 " + (active ? "off" : "on"))).stdout || "");
+    setMsg("expMsg", on ? "Removing the extra rates. The monitor reconnects…" : "Working out what fits and adding it. The monitor reconnects…");
+    const out = parse((await run("sh " + SCRIPT + " extra " + (on ? "off" : "on"))).stdout || "");
     busy = false;
     if (out.error) setMsg("expMsg", out.error, "err");
-    else setMsg("expMsg", active ? "Off. The monitor runs with its own data again." : "Done. Pick 3840 × 2160 @ 75 Hz above.", "ok");
+    else setMsg("expMsg", on ? "Removed. The monitor runs with its own data again." : "Done. The new rates are marked in the list above.", "ok");
     refresh();
   };
 
