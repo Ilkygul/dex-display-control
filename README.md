@@ -38,6 +38,11 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
 - **Bring DeX back after a reconnect** (switch, on by default): if Samsung's DeX does not take the
   monitor back after a mode change (it then stays in screen mirroring), the module reconnects once
   more. Only when DeX was running before; screen mirroring by choice is left alone.
+- **Detect a monitor by itself** (switch, on by default). On: a plugged-in monitor is picked up
+  within seconds (checked every 3 s, every 15 s with the screens off; never while the phone
+  sleeps). Off: without a monitor the watcher waits with no timer at all and costs nothing; after
+  plugging in, open the module page, or let a script run `display.sh wake` (Tasker, Termux), and
+  your settings are applied. Until then Samsung sets the monitor up as usual.
 - **60 Hz while the phone is hot** (switch). When Samsung's heat protection holds the GPU back hard,
   a fast monitor cannot get its fps anyway; the monitor then runs 60 Hz until the phone has cooled
   down, and goes back to your choice by itself.
@@ -92,7 +97,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.11.2.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.12.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -144,6 +149,8 @@ su -c "sh $M forget-failed"          # forget modes that were not kept on this m
 su -c "sh $M thermal-fallback on"    # 60 Hz while the phone is hot (or: off)
 su -c "sh $M temp-override on"       # experimental temperature override (or: off)
 su -c "sh $M dex-recover off"        # do not bring DeX back after a reconnect (or: on)
+su -c "sh $M detect manual"          # only look for a monitor on request (or: auto)
+su -c "sh $M wake"                   # look now (for scripts; the page does this when opened)
 su -c "sh $M temp-limit bat 45"      # override limits: bat 41|45|50, ap 80|90|100, skin 56|65|off
 su -c "sh $M confirm"                # keep a new experimental mode (confirm back: undo now)
 ```

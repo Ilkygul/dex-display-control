@@ -129,6 +129,14 @@
   <div class="sep"></div>
   <div class="row">
     <div>
+      <div>Detect a monitor by itself</div>
+      <div class="hint">Off: nothing runs without a monitor; after plugging in, open this page (or run <code>display.sh wake</code>).</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="detectSw"><span class="slider"></span></label>
+  </div>
+  <div class="sep"></div>
+  <div class="row">
+    <div>
       <div>Lower to 60 Hz while the phone is hot</div>
       <div class="hint">60 Hz while heat holds the GPU back; back to your choice when cool.</div>
     </div>
@@ -359,6 +367,7 @@
 
   function renderDexRec(s) {
     el("dexRecSw").checked = s.dex_recover !== "0"; el("dexRecSw").disabled = busy;
+    el("detectSw").checked = s.detect !== "manual"; el("detectSw").disabled = busy;
   }
 
   function renderDesk(s) {
@@ -777,6 +786,14 @@
     await run("sh " + SCRIPT + " dex-recover " + (e.target.checked ? "on" : "off"));
     busy = false;
     setMsg("msg", e.target.checked ? "On: DeX is brought back if it does not return after a reconnect." : "Off: after a reconnect the monitor is left as Samsung sets it up.", "ok");
+    refresh();
+  };
+
+  el("detectSw").onchange = async (e) => {
+    busy = true;
+    await run("sh " + SCRIPT + " detect " + (e.target.checked ? "auto" : "manual"));
+    busy = false;
+    setMsg("msg", e.target.checked ? "On: a monitor is picked up within seconds." : "Off: without a monitor nothing runs. After plugging in, open this page and your settings are applied.", "ok");
     refresh();
   };
 

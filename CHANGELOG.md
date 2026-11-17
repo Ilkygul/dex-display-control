@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.12.0 (2026-11-18)
+
+- New switch **Detect a monitor by itself** (on by default). Off: with no monitor connected the
+  watcher waits without any timer (zero CPU, also while something else keeps the phone awake).
+  Opening the module page or `display.sh wake` (for Tasker or Termux) makes it look, and a
+  monitor that is found gets your settings as usual. New commands `detect auto|manual` and `wake`.
+
 ## v2.11.2 (2026-11-18)
 
 - With no monitor and the phone's screens off, the watcher looks every 15 s instead of 3 s (a

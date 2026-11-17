@@ -228,6 +228,21 @@ dex_recover_cmd() {
     esac
 }
 
+# Monitor detection without a monitor connected: auto (the watcher looks every 3 s, every 15 s with
+# the screens off) or on request (it waits without any timer until `display.sh wake` or the page).
+MANUAL=$BASE/detect.manual
+wake_watcher() {
+    # Opened read-write so it never blocks, also when no watcher holds the FIFO.
+    [ -p "$BASE/tick" ] && echo 1<>"$BASE/tick"
+}
+detect_cmd() {
+    case "$1" in
+        auto) rm -f "$MANUAL"; log "switch: detect a monitor by itself ON"; wake_watcher; echo "ok=1" ;;
+        manual) : > "$MANUAL"; log "switch: detect a monitor by itself OFF (on request)"; wake_watcher; echo "ok=1" ;;
+        *) echo "error=use: detect auto|manual" ;;
+    esac
+}
+
 # DeX running on the external display right now?
 dex_on() {
     s=$(ext_sf_id); [ -n "$s" ] || return 1
@@ -330,6 +345,9 @@ status() {
     read -r v 2>/dev/null < $pol/cpuinfo_max_freq && echo "cpu_top=$v"
     echo "thermal_fallback=$(get_set thermal_fallback)"
     echo "dex_recover=$(get_set dex_recover)"
+    if [ -f "$MANUAL" ]; then echo "detect=manual"; else echo "detect=auto"; fi
+    # The page is open: a watcher waiting for a request takes a look now.
+    [ -f "$BASE/asleep" ] && { rm -f "$BASE/asleep"; wake_watcher; }
     echo "desk_mode=$(get_set desk_mode)"
     echo "desk_limits=$(get_set desk_bat):$(get_set desk_ap):$(get_set desk_skin)"
     [ -f "$BASE/desk.state" ] && { read -r v < "$BASE/desk.state"; echo "desk_state=$v"; }
@@ -1620,7 +1638,8 @@ watch() {
     # Wait without starting a process: `sleep` is a separate program on Android (fork + exec every
     # 3 s was 85 % of the watcher's CPU time). read -t on an idle FIFO waits inside the shell.
     [ -p "$BASE/tick" ] || { rm -f "$BASE/tick"; mkfifo "$BASE/tick" 2>/dev/null; }
-    if [ -p "$BASE/tick" ] && exec 9<>"$BASE/tick"; then nap() { read -t "$1" -u9 _ 2>/dev/null; }; else nap() { sleep "$1"; }; fi
+    fifo=0
+    if [ -p "$BASE/tick" ] && exec 9<>"$BASE/tick"; then fifo=1; nap() { read -t "$1" -u9 _ 2>/dev/null; }; else nap() { sleep "$1"; }; fi
     sfp=$(pidof surfaceflinger)
     # Started without a monitor (boot, or after a crash): nothing of ours may stay applied.
     connected || { inner_restore; custom_clear; }
@@ -1689,8 +1708,14 @@ watch() {
             sfp=$(pidof surfaceflinger)
             [ "$st" = connected ] && { log "SurfaceFlinger restarted"; pace; }
         fi
+        if [ "$st" != connected ] && [ "$gone" != 1 ] && [ "$fifo" = 1 ] && [ -f "$MANUAL" ]; then
+            # Detection on request: no timer at all, so it costs nothing until `display.sh wake`
+            # (a script, Tasker, Termux) or the page being opened.
+            : > "$BASE/asleep"
+            read -u9 _ 2>/dev/null
+            rm -f "$BASE/asleep"
         # No monitor and the phone's screens off: look less often (a plug-in wakes the screen anyway).
-        if [ "$st" != connected ] && ! phone_is_on; then nap 15; else nap 3; fi
+        elif [ "$st" != connected ] && ! phone_is_on; then nap 15; else nap 3; fi
     done
 }
 
@@ -1702,6 +1727,8 @@ case "$1" in
     thermal-fallback) thermal_cmd "$2" ;;
     inner-verify) inner_verify ;;
     dex-recover) dex_recover_cmd "$2" ;;
+    detect) detect_cmd "$2" ;;
+    wake) rm -f "$BASE/asleep"; wake_watcher; echo "ok=1" ;;
     extra-add) lock; xrate_cmd add "$2"; unlock ;;
     extra-del) lock; xrate_cmd del "$2"; unlock ;;
     forget-failed) connected && { i=$(edid_id); rm -f "${BASE:?}/bad/${i:?}"; log "$i: failed modes forgotten"; mode_info; }; echo "ok=1" ;;
@@ -1720,10 +1747,10 @@ case "$1" in
     boot)
         # A fresh kernel has no custom EDID and no running guard.
         rm -f "$BASE/op.lock/pid"; rmdir "$BASE/op.lock" 2>/dev/null
-        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/thermal.lowered" "$BASE/desk.run" "$BASE/desk.pid" "$BASE/desk.state" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/thermal.lowered" "$BASE/desk.run" "$BASE/desk.pid" "$BASE/desk.state" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$BASE/asleep" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | dex-recover on|off | temp-override on|off | temp-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | dex-recover on|off | detect auto|manual | wake | temp-override on|off | temp-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
 esac
