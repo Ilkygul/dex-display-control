@@ -53,6 +53,11 @@ Internet on DeX.
 | DSC in the module: `dsc on` | LG 40U990A | Detects support and the 340 limit from the kernel log; extra rates rebuilt with DSC: 75/80/90/105/110 Hz (115 left out: 99 % of the limit) |
 | Confirm or go back: 110 Hz confirmed, then 120 Hz not confirmed | LG 40U990A | 120 Hz black, back to 110 Hz by itself after about 40 s |
 | Reconnect with the DSC switches off (as after a reboot) | LG 40U990A | DSC switched on, extra rates added, 110 Hz back, in one extra reconnect |
+| Automatic check of an unchecked monitor (LG with its DSC record removed) | LG 40U990A | Checked at connect, DSC found (limit 340), keep-bar shown; not kept, so off again after 45 s and the extra rates rebuilt without DSC |
+| DSC on from the page, kept; 110 Hz kept; 120 Hz chosen | LG 40U990A | 120 Hz refused: "Too fast for this monitor's DSC decoder"; the list shows it crossed out |
+| Colour depth per mode | LG 40U990A | Without DSC: 60 Hz 8-bit, 70-80 Hz 6-bit, 30 Hz 10-bit; with DSC: 10-bit for all (matches the kernel's `bpp` for the modes used) |
+| Reconnect missed by the watcher (while it was busy starting) | LG 40U990A | Found within 30 s by the new consistency check (DSC switches, extra rates, mode override) and applied again |
+| Two actions reconnecting at once (confirmation timer and watcher) | LG 40U990A | Confused each other before the lock; with the lock they run one after the other |
 | Power (whole phone on battery via slate mode, still DeX screen, 50 s average) | LG 40U990A | 60 Hz 2.03 W; 60 Hz DSC 2.15 W; 80 Hz 6-bit 2.37 W; 110 Hz DSC 3.04 W |
 | Extra rates: remove while at 80 Hz | LG 40U990A | Back to 5120x2160 at 60 Hz, 8-bit, in one reconnect (the LG's preferred timing is 3440x1440, so the module sets the native mode instead of "no override") |
 | Phone screen refresh 30 Hz during DeX | Dell U3225QE | Works: SurfaceFlinger inner render 30 Hz; previous 120/120 restored on "Don't change" |
@@ -74,7 +79,8 @@ Internet on DeX.
 
 ## Not yet tested
 
-- DSC with other monitors (the Dell U3225QE probably supports it), and 115 Hz on the LG.
+- DSC with other monitors (the automatic check is generic, but only the LG was tried), and 115 Hz on
+  the LG. The 4-slice assumption (two DSC encoders, two slices each) comes from the LG at 5120 wide.
 - The extra rates on the Dell U3225QE and the XREAL glasses (the XREAL already offers its 120 Hz
   maximum, so nothing would be added).
 - XREAL "ultrawide" mode (a monitor that changes its own EDID without unplugging): handled in code

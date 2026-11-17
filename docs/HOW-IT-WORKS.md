@@ -109,9 +109,28 @@ its DPCD. With 4 slices at 5120 wide, the LG's 120 Hz needs 355 per slice agains
 stays black. The module keeps its own extra rates within 96 % of that limit, and every experimental
 mode change has to be confirmed (or it goes back by itself).
 
-The switches are global and reset at boot. The module remembers per monitor whether DSC is wanted
-(`/data/adb/fold-display/dsc/<id>`) and sets the switches on every connect, with one software
-re-plug (shared with the extra rates' re-plug when both are on).
+The switches are global and reset at boot. The module remembers per monitor what was decided
+(`/data/adb/fold-display/dsc/<id>`: `peak=<N>` on, `off`, or `none` for no DSC) and sets the
+switches on every connect, with one software re-plug (shared with the extra rates' re-plug when both
+are on). With the `dsc_auto` setting, a monitor without a record is checked at its first connect;
+if it supports DSC the user must keep it within 45 s, otherwise it is recorded as `off`.
+
+The decoder limit is applied generically: a mode is too fast when its pixel clock (from the
+kernel's `edid_modes` list) divided by 4 slices exceeds the monitor's limit. Such modes are refused
+by `set`, and on connect the fastest mode at the same resolution that fits is used instead.
+
+## Colour depth per mode
+
+The page shows, per mode, what the kernel will send: from the monitor's maximum (EDID byte 20,
+capped by `max_bpp` 30) down in steps of 6 bits per pixel until pixel clock x bits fits the link;
+with DSC the maximum, compressed. Worked out after every connect from `edid_modes` and the live link.
+
+## One action at a time
+
+Commands, the confirmation timer and the watcher's connect handling all reconnect the monitor. A
+lock (`/data/adb/fold-display/op.lock`, a directory, created atomically) makes them wait for each
+other. Every 30 s the watcher also checks that the DSC switches, the extra rates and the mode
+override match the monitor, and applies them again if a reconnect was missed.
 
 The display chip has 8 DSC encoders; the inner screen uses 2, the monitor with DSC 2 more and 4
 layer mixers (1280 pixels wide each). The DP pixel clock is lower with DSC (a quarter instead of

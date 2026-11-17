@@ -55,6 +55,7 @@
   details.card[open] > summary { margin-bottom: 10px; }
   details p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   .sep { border-top: 1px solid var(--line); margin: 14px 0; }
+  .chip.over { opacity: .45; text-decoration: line-through; }
   .confirm { border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
 </style>
 </head>
@@ -77,6 +78,7 @@
     <div class="chips" style="margin-top:8px"><button class="chip active" id="keepBtn">Keep this mode</button><button class="chip" id="backBtn">Go back now</button></div>
   </div>
   <div id="modes" class="empty">–</div>
+  <div class="hint" id="legend" style="margin-top:8px"></div>
   <button class="wide" id="resetBtn">Use the monitor's default</button>
   <div class="msg" id="msg"></div>
 </div>
@@ -103,8 +105,15 @@
   <div>Extra refresh rates (custom timings)</div>
   <div class="hint">Every mode change while an experimental option is on must be confirmed within 30 seconds, or the previous mode comes back by itself. So a black monitor fixes itself.</div>
   <div class="sep"></div>
-  <div>Compression (DSC) for this monitor</div>
-  <div class="hint">Display Stream Compression, built into the phone's display chip but switched off by Samsung. With it, 5120 × 2160 runs at 100 and 110 Hz in 10-bit colour on an LG 40U990A (tested). Costs about 0.1 W; the higher refresh rate itself costs about 17 mW per Hz. Only monitors that report DSC use it. Some modes a monitor lists can be too fast for its decoder (the LG's own 120 Hz stays black): those are not confirmed and switch back.</div>
+  <div>Compression (DSC)</div>
+  <div class="hint">Display Stream Compression, built into the phone's display chip but switched off by Samsung. With it the cable is no longer the limit, the monitor's decoder is: on an LG 40U990A 5120 × 2160 runs at 100 and 110 Hz in 10-bit colour (tested). Costs about 0.1 W; a higher refresh rate itself costs about 17 mW per Hz. Modes too fast for the monitor's decoder are crossed out in the list (the LG's own 120 Hz would stay black).</div>
+  <div class="row" style="margin-top:10px">
+    <div>
+      <div>Check new monitors automatically</div>
+      <div class="hint">A monitor that was not checked yet is checked once when it connects (one extra reconnect). If it supports DSC, compression is switched on; keep it within 45 s or it goes off again by itself.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="dscAutoSw"><span class="slider"></span></label>
+  </div>
   <button class="wide" id="dscBtn">Turn compression on for this monitor</button>
   <div class="hint" id="dscState" style="margin-top:8px"></div>
   <div class="msg" id="dscMsg"></div>
@@ -140,13 +149,14 @@
   }
 
   function parse(out) {
-    const s = { modes: [], profiles: {}, extraOn: [], dscOn: {} };
+    const s = { modes: [], profiles: {}, extraOn: [], dscMon: {}, mi: {} };
     for (const line of out.split("\n")) {
       const i = line.indexOf("="); if (i < 0) continue;
       const k = line.slice(0, i), v = line.slice(i + 1).trim();
       if (k === "mode") { if (!s.modes.includes(v)) s.modes.push(v); }
       else if (k === "extra_on") s.extraOn.push(v);
-      else if (k === "dsc_on") { const j = v.indexOf(":"); s.dscOn[v.slice(0, j)] = v.slice(j + 1); }
+      else if (k === "dsc_mon") { const j = v.indexOf(":"); s.dscMon[v.slice(0, j)] = v.slice(j + 1); }
+      else if (k === "mi") { const p = v.split(":"); const key = p.slice(0, 3).join(":"); if (!(key in s.mi)) s.mi[key] = { bits: +p[3] / 3, dsc: p[4] === "dsc", over: p[5] === "1" }; }
       else if (k === "profile") { const j = v.indexOf(":"); s.profiles[v.slice(0, j)] = v.slice(j + 1); }
       else s[k] = v;
     }
@@ -235,20 +245,24 @@
   }
 
   function renderDsc(s) {
-    const btn = el("dscBtn"), st = el("dscState"), on = s.id in s.dscOn;
-    btn.textContent = on ? "Turn compression off for this monitor" : "Turn compression on for this monitor";
+    const btn = el("dscBtn"), st = el("dscState"), d = s.dscMon[s.id] || "", on = d.startsWith("peak=");
+    el("dscAutoSw").checked = s.dsc_auto === "1"; el("dscAutoSw").disabled = busy;
+    btn.textContent = on ? "Turn compression off for this monitor" : d === "none" ? "Check this monitor again" : "Turn compression on for this monitor";
     btn.disabled = busy || s.connected !== "1";
     if (s.connected !== "1") { st.textContent = "Connect a monitor to use this."; return; }
-    if (!on) { st.textContent = "Off."; return; }
-    const used = s.dsc_active === "1" ? "in use for the current mode" : "not needed for the current mode";
-    st.innerHTML = '<span class="okc">On: the monitor supports DSC (decoder limit ' + s.dscOn[s.id] + " Mpixel/s per slice); " + used + ".</span>";
+    if (on) {
+      const used = s.dsc_active === "1" ? "in use now" : "not in use for the current mode";
+      st.innerHTML = '<span class="okc">On for this monitor: it supports DSC, decoder limit ' + d.slice(5) + " Mpixel/s per slice; " + used + ".</span>";
+    } else st.textContent = d === "none" ? "This monitor does not report DSC support." : d === "off" ? "Off for this monitor." : "Not checked for this monitor yet.";
   }
 
   function renderConfirm(s) {
     const bar = el("confirmBar");
     if (!s.confirm_left || s.connected !== "1") { bar.style.display = "none"; return; }
     bar.style.display = "";
-    el("confirmText").textContent = "Keep " + (s.current ? fmtKey(keyOf(s.current)) : "this mode") + "? Going back to " + fmtKey(s.confirm_prev) + " in " + s.confirm_left + " s.";
+    el("confirmText").textContent = s.confirm_prev === "DSC"
+      ? "Compression was switched on for this monitor. Keep it? It goes off again in " + s.confirm_left + " s."
+      : "Keep " + (s.current ? fmtKey(keyOf(s.current)) : "this mode") + "? Going back to " + fmtKey(s.confirm_prev) + " in " + s.confirm_left + " s.";
   }
 
   function renderExp(s) {
@@ -315,7 +329,10 @@
     }
     if (s.density) t += fact("DeX density", s.density + " dpi");
     t += fact("Monitor id", s.id + (s.variant ? " · variant " + s.variant : ""));
+    if (s.kern && s.kern.bpp) f += fact("Colour depth", s.kern.bpp / 3 + "-bit per colour" + (s.dsc_active === "1" ? ", compressed (DSC)" : ""));
     el("facts").innerHTML = f; el("tech").innerHTML = t;
+    const anyAdded = Object.keys(s.extraBpp).length > 0, anyOver = Object.values(s.mi).some((x) => x.over);
+    el("legend").textContent = "Bits = colour depth per colour channel (8-bit = 16.7 million colours, 10-bit = 1.07 billion, 6-bit = 262,144); DSC = sent compressed." + (anyAdded ? " + = added by this module." : "") + (anyOver ? " Crossed out = too fast for the monitor's DSC decoder." : "");
     el("fixBtn").style.display = dexMismatch && !busy ? "" : "none";
     reset.disabled = busy || !s.saved;
 
@@ -333,8 +350,11 @@
       for (const m of groups[r].sort((a, b) => hzOf(b) - hzOf(a))) {
         const key = keyOf(m); if (seen.has(key)) continue; seen.add(key);
         const b = document.createElement("button");
-        b.className = "chip" + (key === currentKey ? " active" : "") + (key === savedKey ? " saved" : "");
-        b.textContent = hzOf(m) + " Hz" + (s.extraBpp[key] ? (s.extraBpp[key] === "18" ? " · 6-bit" : s.extraBpp[key] === "dsc" ? " · DSC" : " · added") : ""); b.disabled = busy;
+        const mi = s.mi[key], over = !!(mi && mi.over && key !== currentKey);
+        b.className = "chip" + (key === currentKey ? " active" : "") + (key === savedKey ? " saved" : "") + (over ? " over" : "");
+        b.textContent = hzOf(m) + " Hz" + (mi ? " · " + mi.bits + "-bit" + (mi.dsc ? " DSC" : "") : "") + (s.extraBpp[key] ? " +" : "");
+        b.title = over ? "Too fast for this monitor's DSC decoder" : "";
+        b.disabled = busy || over;
         b.onclick = () => apply(key, fmtKey(key), key === currentKey, false);
         chips.appendChild(b);
       }
@@ -422,14 +442,22 @@
     refresh();
   };
 
+  el("dscAutoSw").onchange = async (e) => {
+    busy = true;
+    await run("sh " + SCRIPT + " dsc " + (e.target.checked ? "auto-on" : "auto-off"));
+    busy = false;
+    setMsg("dscMsg", e.target.checked ? "On: monitors that were not checked yet are checked when they connect." : "Off: new monitors are left as they are.", "ok");
+    refresh();
+  };
+
   el("dscBtn").onclick = async () => {
-    const on = last && last.id in last.dscOn;
+    const on = last && (last.dscMon[last.id] || "").startsWith("peak=");
     busy = true; render(last);
     setMsg("dscMsg", on ? "Turning compression off. The monitor reconnects…" : "Turning compression on and checking the monitor. It reconnects once or twice…");
     const out = parse((await run("sh " + SCRIPT + " dsc " + (on ? "off" : "on"))).stdout || "");
     busy = false;
     if (out.error) setMsg("dscMsg", out.error, "err");
-    else setMsg("dscMsg", on ? "Off." : "On. Faster modes are in the list above; a new mode must be confirmed.", "ok");
+    else setMsg("dscMsg", on ? "Off." : "On. Keep it with the bar above within 45 s; faster modes are in the list.", "ok");
     refresh();
   };
 

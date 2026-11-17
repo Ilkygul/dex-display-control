@@ -51,6 +51,28 @@ mkdir -p "$PROF"
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
+# One state-changing action at a time (commands, the confirmation timer, the watcher's connect
+# handling): they all reconnect the monitor and would otherwise trip over each other. mkdir is atomic;
+# a lock whose owner died is taken over; after 2 minutes the waiter goes ahead anyway.
+LOCKD=$BASE/op.lock
+lock() {
+    i=0
+    while ! mkdir "$LOCKD" 2>/dev/null; do
+        o=$(cat "${LOCKD:?}/pid" 2>/dev/null)
+        if [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; then
+            rm -f "${LOCKD:?}/pid"; rmdir "$LOCKD" 2>/dev/null; continue
+        fi
+        i=$((i + 1)); [ "$i" -ge 120 ] && { log "lock held by ${o:-?} for 2 minutes; going ahead"; break; }
+        sleep 1
+    done
+    echo $$ > "${LOCKD:?}/pid" 2>/dev/null
+}
+unlock() {
+    o=$(cat "${LOCKD:?}/pid" 2>/dev/null)
+    [ "$o" = $$ ] || [ -z "$o" ] || return 0
+    rm -f "${LOCKD:?}/pid"; rmdir "$LOCKD" 2>/dev/null
+}
+
 # Start "$@" detached in its own session, then wait a moment before returning: the caller (KernelSU's
 # service stage, or the page through ksu.exec) may end its process group as soon as this script
 # exits, and that killed children before setsid had moved them out (found 2026-11-17: the watcher
@@ -190,6 +212,7 @@ pace() {
     l=${l#*dp_panel_resolution_info: }
     [ -n "$l" ] && echo "$(edid_id)|$l" > "$LINK"
     dsc_note
+    mode_info
     rm -f "$DMC"
 }
 
@@ -235,7 +258,9 @@ status() {
     [ -f "$BASE/custom.active" ] && { read -r ca < "$BASE/custom.active"; echo "custom=active:$ca"; }
     [ -f "$BASE/extra.modes" ] && { read -r xm < "$BASE/extra.modes"; echo "extra_modes=$xm"; }
     [ -d "$EXTRA" ] && for f in "$EXTRA"/*; do [ -f "$f" ] && echo "extra_on=${f##*/}"; done
-    [ -d "$DSCD" ] && for f in "$DSCD"/*; do [ -f "$f" ] && { read -r v < "$f"; echo "dsc_on=${f##*/}:${v#peak=}"; }; done
+    echo "dsc_auto=$(get_set dsc_auto)"
+    [ -d "$DSCD" ] && for f in "$DSCD"/*; do [ -f "$f" ] && { read -r v < "$f"; echo "dsc_mon=${f##*/}:$v"; }; done
+    [ -f "$BASE/modeinfo" ] && while read -r v; do echo "mi=$v"; done < "$BASE/modeinfo"
     [ -f "$BASE/dsc.state" ] && { read -r v < "$BASE/dsc.state"; echo "dsc_active=$v"; }
     if [ -f "$CONF" ]; then
         read -r _ cp cd < "$CONF"; read -r u _ < /proc/uptime; u=${u%.*}
@@ -329,10 +354,14 @@ set_mode() {
         *" $key "*) ;;
         *) echo "error=This monitor does not offer $key"; return 1 ;;
     esac
+    dsc_fits "$key" "$id" || { echo "error=Too fast for this monitor's DSC decoder ($(dsc_peak "$id") Mpixel/s per slice)"; return 1; }
     var=$(variant)
     prev=$(active_mode); prev=${prev:+$(to_key "$prev")}
     arm=0
-    if [ "$2" != keep ] && [ -n "$prev" ] && [ "$prev" != "$key" ] && experimental "$id"; then
+    pc=""; [ -f "$CONF" ] && read -r _ pc _ < "$CONF"
+    if [ "$pc" = DSC ]; then
+        :   # DSC itself still waits for confirmation; that one undoes everything if needed.
+    elif [ "$2" != keep ] && [ -n "$prev" ] && [ "$prev" != "$key" ] && experimental "$id"; then
         # Keep the first unconfirmed mode's predecessor if one is already pending.
         p0=""; [ -f "$CONF" ] && read -r _ p0 _ < "$CONF"
         echo "$id-$var ${p0:-$prev} $(($(up_s) + CONF_S + 12))" > "$CONF"
@@ -382,6 +411,13 @@ on_connect() {
     if [ -z "$want" ] && [ -n "$pref" ]; then
         # No usable profile: honour DeX's own resolution choice, if the monitor offers it.
         case "$have" in *" $pref "*) want=$pref ;; esac
+    fi
+    # With DSC, never run a mode the monitor's decoder cannot take (it would stay black).
+    tgt=${want:-$act}
+    if [ -n "$tgt" ] && ! dsc_fits "$tgt" "$id"; then
+        nb=$(dsc_best "${tgt%:*}" "$id")
+        log "$id: $tgt is too fast for the DSC decoder; using ${nb:-the default}"
+        want=$nb
     fi
     prop=$(getprop $PROP); prop=${prop%:1}
     if [ -n "$want" ]; then
@@ -826,22 +862,30 @@ extra_cmd() {
     esac
 }
 
-# ---- Experimental: Display Stream Compression (DSC) per monitor --------------------------------
+# ---- Experimental: Display Stream Compression (DSC) ---------------------------------------------
 # Qualcomm's driver has DSC and FEC switched off on this phone; debugfs dsc_feature_enable and
 # fec_feature_enable switch them on, and the next connect reads the monitor's DSC capabilities
-# (only monitors that report DSC use it). Compressed to 8 bits per pixel, 5120x2160 at 100/110 Hz
-# fits the HBR2 x4 link (LG 40U990A, tested 2026-11-17). The switches are global and reset on boot,
-# so on every connect they are set to what that monitor wants. $DSCD/<id> holds "peak=<Mpixel/s per
-# slice>" learned from the kernel log.
+# (only monitors that report DSC use it; then every mode is sent compressed, 8 bits per pixel on the
+# link). The switches are global and reset on boot, so on every connect they are set to what that
+# monitor wants. Per monitor, $DSCD/<id> holds the decision:
+#   peak=<N>  on; the monitor's decoder takes N Mpixel/s per slice (kernel log; 340 if not printed)
+#   off       turned off (by the user, or a check that was not confirmed)
+#   none      the monitor reports no DSC
+#   (no file) not checked yet: checked at connect when "dsc_auto" is on in the settings.
+# What the phone does not check is that decoder limit: with up to 4 slices (two DSC encoders, two
+# slices each), a mode whose pixel clock / 4 exceeds it stays black (LG 40U990A at 120 Hz: 355 > 340).
+# Such modes are refused, and avoided on connect.
 DSCD=$BASE/dsc
 
 dsc_flag() { debugfs_up || return 1; read -r f < "$DBG/dsc_feature_enable"; [ "$f" = Y ]; }
 dsc_set() { debugfs_up || return 1; echo "$1" > "$DBG/fec_feature_enable"; echo "$1" > "$DBG/dsc_feature_enable"; }
+dsc_state() { v=""; read -r v 2>/dev/null < "$DSCD/$1"; echo "$v"; }
+dsc_wanted() { case "$(dsc_state "$1")" in peak=*) return 0 ;; esac; return 1; }
 
 # Decoder limit for monitor $1 if DSC is on for it and the switches are on; empty otherwise.
 dsc_peak() {
-    [ -f "$DSCD/$1" ] && dsc_flag || return 0
-    pk=""; read -r pk 2>/dev/null < "$DSCD/$1"; pk=${pk#peak=}
+    dsc_wanted "$1" && dsc_flag || return 0
+    pk=$(dsc_state "$1"); pk=${pk#peak=}
     [ "${pk:-0}" -gt 0 ] 2>/dev/null && echo "$pk"
 }
 
@@ -861,11 +905,86 @@ dsc_note() {
     case "$c" in "") ;; *"compression:0x0 "*) echo 0 > "$BASE/dsc.state" ;; *) echo 1 > "$BASE/dsc.state" ;; esac
 }
 
-# Watcher, on connect: switches to what this monitor wants. 0 = they changed (a re-plug is needed).
-dsc_auto() {
+# Pixel clock (kHz) of mode W:H:HZ from the kernel's mode list.
+clk_of() {
+    w=${1%%:*}; r=${1#*:}; hh=${r%%:*}; z=${r#*:}
+    cat "$DBG/edid_modes" 2>/dev/null | while read -r res fz _ _ _ ck _; do
+        [ "$res" = "${w}x$hh" ] && [ "$fz" = "$z" ] && { echo "$ck"; break; }
+    done
+}
+
+# Mode $1 fits the DSC decoder of monitor $2 (always true without DSC).
+dsc_fits() {
+    pk=$(dsc_peak "$2"); [ -n "$pk" ] || return 0
+    ck=$(clk_of "$1"); [ -n "$ck" ] || return 0
+    [ $((ck / 4)) -le $((pk * 1000)) ]
+}
+
+# Fastest offered mode at resolution $1 (W:H) that fits the decoder of monitor $2.
+dsc_best() {
+    bz=0
+    for k in $(offered); do
+        case "$k" in "$1:"*) z=${k##*:}; [ "$z" -gt "$bz" ] && dsc_fits "$k" "$2" && bz=$z ;; esac
+    done
+    [ "$bz" -gt 0 ] && echo "$1:$bz"
+}
+
+# Colour depth per mode for the page: "W:H:HZ:bits per pixel:dsc|plain:too fast 0|1", the way the
+# kernel picks it (deepest the monitor takes, max_bpp 30, stepping down by 6 to 18 until it fits the
+# link; with DSC the deepest, compressed). Written after every connect.
+mode_info() {
+    debugfs_up && connected || return
     id=$(edid_id)
-    want=N; [ -f "$DSCD/$id" ] && want=Y
+    e=$(od -An -tx1 -j20 -N1 $CONN/edid 2>/dev/null | tr -d ' \n')
+    maxb=24
+    case $(((0x${e:-80} >> 4) & 7)) in 1) maxb=18 ;; 2) maxb=24 ;; 3|4|5|6) maxb=30 ;; esac
+    mb=30; read -r mb 2>/dev/null < "$DBG/max_bpp"; [ "${mb:-30}" -lt "$maxb" ] && maxb=$mb
+    cap=$(link_cap); [ -n "$cap" ] || cap=17280000
+    pk=$(dsc_peak "$id")
+    cat "$DBG/edid_modes" 2>/dev/null | while read -r res fz _ _ _ ck _; do
+        [ -n "$ck" ] || continue
+        key="${res%x*}:${res#*x}:$fz"
+        if [ -n "$pk" ]; then
+            ov=0; [ $((ck / 4)) -gt $((pk * 1000)) ] && ov=1
+            echo "$key:$maxb:dsc:$ov"
+        else
+            bb=$maxb
+            while [ "$bb" -ge 18 ] && [ $((ck * bb)) -gt "$cap" ]; do bb=$((bb - 6)); done
+            [ "$bb" -ge 18 ] && echo "$key:$bb:plain:0"
+        fi
+    done > "$BASE/modeinfo"
+}
+
+# Arm the confirmation for DSC on monitor $1: without "confirm" within 45 s it goes off again.
+dsc_arm() {
+    echo "$1 DSC $(($(up_s) + 45))" > "$CONF"
+    spawn sh "$0" revert-timer
+}
+
+# Switch DSC off for monitor $1 (decision $2: off or none) and reconnect without it.
+dsc_disable() {
+    mkdir -p "$DSCD"; echo "$2" > "$DSCD/$1"; dsc_set 0
+    if [ -f "$EXTRA/$1" ]; then extra_apply "$1"; else hw_replug; fi
+}
+
+# Watcher, on connect: checks a new monitor (with dsc_auto on), then sets the switches to what this
+# monitor wants. 0 = the switches changed and a re-plug is still needed.
+dsc_auto() {
+    id=$(edid_id); [ -n "$id" ] || return 1
     debugfs_up || return 1
+    if [ -z "$(dsc_state "$id")" ] && [ "$(get_set dsc_auto)" = 1 ]; then
+        mkdir -p "$DSCD"
+        log "$id: not checked for DSC yet; checking"
+        dsc_set 1; hw_replug
+        if dsc_learn "$id"; then
+            dsc_arm "$id"
+        else
+            log "$id: no DSC"
+            echo none > "$DSCD/$id"; dsc_set 0; hw_replug
+        fi
+        return 1
+    fi
+    want=N; dsc_wanted "$id" && want=Y
     read -r f < "$DBG/dsc_feature_enable"
     [ "$f" = "$want" ] && return 1
     if [ "$want" = Y ]; then dsc_set 1; else dsc_set 0; fi
@@ -874,6 +993,10 @@ dsc_auto() {
 }
 
 dsc_cmd() {
+    case "$1" in
+        auto-on) put_set dsc_auto 1; log "switch: check new monitors for DSC ON"; echo "ok=1"; return ;;
+        auto-off) put_set dsc_auto 0; log "switch: check new monitors for DSC OFF"; echo "ok=1"; return ;;
+    esac
     settle
     connected || { echo "error=No external display connected"; return 1; }
     debugfs_up || { echo "error=Qualcomm DisplayPort debugfs not available"; return 1; }
@@ -885,36 +1008,43 @@ dsc_cmd() {
             log "$id: DSC on; software re-plug"
             hw_replug
             if ! dsc_learn "$id"; then
-                rm -f "${DSCD:?}/${id:?}"; dsc_set 0
-                if [ -f "$EXTRA/$id" ]; then extra_apply "$id"; else hw_replug; fi
+                dsc_disable "$id" none >/dev/null
                 echo "error=This monitor does not report DSC support"; return 1
             fi
             # Extra rates are worked out again with the compression limits.
             [ -f "$EXTRA/$id" ] && extra_apply "$id"
-            echo "ok=1" ;;
+            dsc_arm "$id"
+            echo "confirm=45"; echo "ok=1" ;;
         off)
-            rm -f "${DSCD:?}/${id:?}"; dsc_set 0
             log "$id: DSC off"
-            if [ -f "$EXTRA/$id" ]; then extra_apply "$id"; else hw_replug; fi
+            [ -f "$CONF" ] && { read -r cf cp _ < "$CONF"; [ "$cp" = DSC ] && rm -f "${CONF:?}"; }
+            dsc_disable "$id" off
             echo "ok=1" ;;
-        *) echo "error=use: dsc on|off" ;;
+        *) echo "error=use: dsc on|off|auto-on|auto-off" ;;
     esac
 }
 
 # ---- Confirm or go back ----------------------------------------------------------------------
 # An experimental mode (custom EDID or DSC in use) can leave the monitor black while the phone
-# thinks all is well. Such a mode change must be confirmed within CONF_S seconds, or the previous
-# mode comes back by itself. confirm.pending: "<profile file> <previous W:H:HZ> <deadline uptime>".
+# thinks all is well. Such a change must be confirmed in time, or it is undone by itself.
+# confirm.pending: "<profile file> <previous W:H:HZ> <deadline uptime>", or "<id> DSC <deadline>"
+# after DSC was switched on for a monitor.
 CONF=$BASE/confirm.pending
 CONF_S=30
 
-experimental() { [ -f "$BASE/custom.active" ] || [ -f "$DSCD/$1" ]; }
+experimental() { [ -f "$BASE/custom.active" ] || dsc_wanted "$1"; }
 
 up_s() { read -r u _ < /proc/uptime; echo "${u%.*}"; }
 
 revert_now() {
     [ -f "$CONF" ] || return 1
     read -r f prev _ < "$CONF"; rm -f "${CONF:?}"
+    if [ "$prev" = DSC ]; then
+        log "$f: DSC not confirmed; off again"
+        settle
+        dsc_disable "$f" off
+        return 0
+    fi
     log "not confirmed: back to $prev"
     echo "$prev:1" > "$PROF/$f"
     settle
@@ -925,7 +1055,7 @@ revert_now() {
 revert_timer() {
     while [ -f "$CONF" ]; do
         read -r _ _ dl < "$CONF"
-        [ "$(up_s)" -ge "${dl:-0}" ] && { revert_now; return; }
+        [ "$(up_s)" -ge "${dl:-0}" ] && { lock; revert_now; unlock; return; }
         sleep 1
     done
 }
@@ -933,11 +1063,50 @@ revert_timer() {
 confirm_cmd() {
     case "$1" in
         back) if revert_now; then echo "ok=1"; else echo "error=Nothing to undo"; fi ;;
-        *) [ -f "$CONF" ] && { rm -f "${CONF:?}"; log "mode confirmed"; }; echo "ok=1" ;;
+        *) [ -f "$CONF" ] && { rm -f "${CONF:?}"; log "confirmed"; }; echo "ok=1" ;;
     esac
 }
 
 # ---- Watcher ----------------------------------------------------------------------------------
+
+# Everything that follows a connect (also used when the watcher finds the state drifted).
+connect_steps() {
+    lock
+    custom_on_connect || wait_sf >/dev/null
+    if dsc_auto; then
+        # The switches only count at a connect: the extra rates' re-plug does it, or one now.
+        id=$(edid_id)
+        if [ -f "$EXTRA/$id" ]; then [ -f "$BASE/custom.active" ] && extra_apply "$id"; else hw_replug; fi
+    fi
+    extra_auto
+    on_connect
+    unlock
+    pace
+    inner_apply
+    guard_start
+}
+
+# A reconnect the watcher missed (for example while it was busy) leaves things half done: DSC
+# switches not as this monitor wants, extra rates on but not applied, or a mode override not in
+# effect although offered. 0 = drifted.
+drift() {
+    [ -f "$BASE/replug.busy" ] && return 1
+    id=$(edid_id); [ -n "$id" ] || return 1
+    if debugfs_up; then
+        read -r f < "$DBG/dsc_feature_enable"
+        w=N; dsc_wanted "$id" && w=Y
+        [ "$f" = "$w" ] || return 0
+    fi
+    [ -f "$EXTRA/$id" ] && [ ! -f "$BASE/custom.active" ] && return 0
+    pr=$(getprop $PROP); pr=${pr%:1}
+    [ -n "$pr" ] || return 1
+    b=$(ext_block)
+    a=$(printf '%s\n' "$b" | sed -n 's/.*activeMode={id=[0-9]*, hwcId=[0-9]*, resolution=\([0-9x]*\), vsyncRate=\([0-9.]*\) Hz.*/\1@\2/p' | head -n 1)
+    [ -n "$a" ] || return 1
+    [ "$(to_key "$a")" = "$pr" ] && return 1
+    for m in $(printf '%s\n' "$b" | modes_of); do [ "$(to_key "$m")" = "$pr" ] && return 0; done
+    return 1
+}
 
 # Cheap watcher: every 3 s one sysfs read and one /proc stat; while a monitor is connected also an
 # EDID checksum (one small process), and every 30 s a pacesetter and refresh-rate check.
@@ -961,17 +1130,7 @@ watch() {
             if [ "$st" = connected ]; then
                 sum=$(cksum < $CONN/edid 2>/dev/null)
                 wait_sf >/dev/null
-                custom_on_connect || wait_sf >/dev/null
-                if dsc_auto; then
-                    # The switches only count at a connect: the extra rates' re-plug does it, or one now.
-                    id=$(edid_id)
-                    if [ -f "$EXTRA/$id" ]; then [ -f "$BASE/custom.active" ] && extra_apply "$id"; else hw_replug; fi
-                fi
-                extra_auto
-                on_connect
-                pace
-                inner_apply
-                guard_start
+                connect_steps
             elif [ "$prev" = connected ] && [ ! -f "$BASE/replug.busy" ]; then
                 guard_stop wake
                 unpace
@@ -986,12 +1145,19 @@ watch() {
             if [ -n "$s2" ] && [ "$s2" != "$sum" ]; then
                 log "EDID changed without unplugging"
                 sum=$s2
+                lock
                 custom_on_connect || wait_sf >/dev/null
                 on_connect
+                unlock
                 pace
             fi
             tick=$((tick + 1))
             if [ $((tick % 10)) = 0 ]; then
+                if drift; then
+                    log "state does not match this monitor (missed reconnect?); applying again"
+                    connect_steps
+                    sum=$(cksum < $CONN/edid 2>/dev/null)
+                fi
                 pacesetter_ok || { log "pacesetter lost; re-applying"; pace_now; }
                 inner_apply
                 [ "$(get_set phone_guard)" = 1 ] && [ ! -f "$BASE/guard.pid" ] && guard_start
@@ -1008,24 +1174,25 @@ watch() {
 
 case "$1" in
     status) status "$2" ;;
-    set) set_mode "$2" "$3" ;;
-    confirm) confirm_cmd "$2" ;;
+    set) lock; set_mode "$2" "$3"; unlock ;;
+    confirm) if [ "$2" = back ]; then lock; confirm_cmd back; unlock; else confirm_cmd; fi ;;
     revert-timer) revert_timer ;;
-    dsc) dsc_cmd "$2" ;;
-    reset) reset_mode ;;
+    dsc) case "$2" in auto-*) dsc_cmd "$2" ;; *) lock; dsc_cmd "$2"; unlock ;; esac ;;
+    reset) lock; reset_mode; unlock ;;
     pace) pace ;;
     phone) phone_cmd "$2" ;;
     phone-guard) guard_cmd "$2" ;;
     guard-run) guard_run ;;
     inner-hz) inner_cmd "$2" ;;
-    extra|exp75) extra_cmd "$2" ;;
+    extra|exp75) lock; extra_cmd "$2"; unlock ;;
     watch) tail -n 300 "$LOG" > "$LOG.trim" 2>/dev/null && mv -f "$LOG.trim" "$LOG"; watch ;;
     boot)
         # A fresh kernel has no custom EDID and no running guard.
-        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/op.lock/pid"; rmdir "$BASE/op.lock" 2>/dev/null
+        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off | confirm [back] | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | confirm [back] | watch | boot" ;;
 esac

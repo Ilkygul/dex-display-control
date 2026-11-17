@@ -1,6 +1,6 @@
 id=fold-display
 name=DeX Display Control
-version=v2.3.0
-versionCode=230
+version=v2.4.0
+versionCode=240
 author=Ilkygul
 description=Resolution and refresh rate for USB-C monitors on Samsung DeX, remembered per monitor, with DeX and apps kept at the monitor's rate. Optional: keep the phone screen off while connected, a lower phone screen refresh rate during DeX, and experimental compression (DSC) and extra refresh rates (for example 5120x2160 at 110 Hz). Open the page from KernelSU Manager. Root required.

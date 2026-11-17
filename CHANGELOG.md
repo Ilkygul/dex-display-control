@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.4.0 (2026-11-17)
+
+- DSC for any monitor: optional automatic check of monitors not seen before (`dsc auto-on`), with a
+  45 s keep-or-undo; per-monitor record on / off / no DSC.
+- Generic decoder limit: modes too fast for a monitor's DSC decoder are refused, avoided on connect
+  and crossed out on the page.
+- Colour depth per mode on the page (6/8/10-bit, DSC), and the current colour depth.
+- Watcher checks every 30 s that DSC, extra rates and the mode match the monitor (missed reconnects).
+- A lock keeps reconnecting actions from running at the same time.
+
 ## v2.3.0 (2026-11-17)
 
 - Experimental compression (DSC) per monitor: `dsc on|off`. Detects support and the decoder limit,

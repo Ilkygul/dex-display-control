@@ -31,10 +31,13 @@ that rate, and can keep the phone's own screen off while a monitor is connected.
   80 Hz** on an LG 40U990A, which offers 60 Hz at most over this phone. Rates that do not fit at
   8-bit colour run at 6-bit. Remembered per monitor and applied again on every connection; the
   monitor reconnects by itself, nothing to unplug.
-- **Experimental: compression (DSC) per monitor.** The phone's display chip can compress the
-  picture (Display Stream Compression), but Samsung leaves it off. Switched on for a monitor that
-  supports it, 5120x2160 runs at **100 and 110 Hz in 10-bit colour** on an LG 40U990A. Together with
-  the extra rates the module stays within the monitor's decoder limit.
+- **Experimental: compression (DSC), for any monitor that supports it.** The phone's display chip
+  can compress the picture (Display Stream Compression), but Samsung leaves it off. With "Check new
+  monitors automatically" on, every monitor is checked once when it first connects; DSC is switched
+  on where supported (you keep it with one tap). On an LG 40U990A 5120x2160 runs at **100 and
+  110 Hz in 10-bit colour**. Modes too fast for a monitor's DSC decoder are refused and avoided.
+- **Colour depth per mode.** Every mode in the list shows the colour depth the phone will send
+  (6-, 8- or 10-bit, and whether it is compressed), worked out the way the kernel picks it.
 - **Confirm or go back.** While an experimental option is on, a new mode must be confirmed within
   30 seconds or the previous one comes back by itself, so a black monitor fixes itself.
 - **Repairs itself.** If a custom timing ever ends up on a monitor it was not made for, the module
@@ -58,7 +61,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.3.0.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.4.0.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.
@@ -75,9 +78,13 @@ override, gives the apps' frame clock back to the phone and wakes the phone scre
 - **Phone screen switch:** turn it on, and the phone screen goes off while DeX runs on the monitor.
   Press the side key to see the phone screen; when it turns off again (side key or timeout) it is
   kept off again.
-- **Experimental > Compression (DSC):** tap "Turn compression on for this monitor". The module
-  checks that the monitor supports DSC (about 15 s, one or two reconnects) and remembers it; on every
-  connection it is switched on again for that monitor and off for others.
+- **Experimental > Compression (DSC):** either switch on "Check new monitors automatically" (a
+  monitor not seen before is checked when it connects), or tap "Turn compression on for this
+  monitor". Either way the module reads the monitor's DSC support and decoder limit (about 15 s,
+  one or two reconnects), switches it on, and asks you to keep it within 45 s; otherwise it goes off
+  again for that monitor. The decision is remembered per monitor (on, off, or no DSC).
+- **Mode list:** "10-bit DSC", "8-bit", "6-bit" show the colour depth per mode; "+" marks a rate
+  added by the module; a crossed-out mode is too fast for the monitor's DSC decoder.
 - **Keep this mode?** After choosing a mode with an experimental option on, a bar asks to keep it.
   Without an answer the previous mode returns after 30 seconds (plus the reconnect time).
 - **Experimental > Extra refresh rates:** tap "Add extra refresh rates for this monitor". The module
@@ -100,6 +107,7 @@ su -c "sh $M phone-guard off"        # turn the keep-off switch off (escape rout
 su -c "sh $M inner-hz 60"            # phone screen refresh while connected (or: off)
 su -c "sh $M extra on"               # experimental extra refresh rates for this monitor (or: off)
 su -c "sh $M dsc on"                 # experimental compression (DSC) for this monitor (or: off)
+su -c "sh $M dsc auto-on"            # check new monitors for DSC when they connect (or: auto-off)
 su -c "sh $M confirm"                # keep a new experimental mode (confirm back: undo now)
 ```
 
