@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.11.2 (2026-11-18)
+
+- With no monitor and the phone's screens off, the watcher looks every 15 s instead of 3 s (a
+  plug-in wakes the screen anyway). It holds no wakelock: while the phone sleeps it costs nothing.
+
 ## v2.11.1 (2026-11-17)
 
 - Watcher waits inside the shell (read with a timeout on an idle FIFO) instead of starting `sleep`

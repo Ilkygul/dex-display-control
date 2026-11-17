@@ -1689,7 +1689,8 @@ watch() {
             sfp=$(pidof surfaceflinger)
             [ "$st" = connected ] && { log "SurfaceFlinger restarted"; pace; }
         fi
-        nap 3
+        # No monitor and the phone's screens off: look less often (a plug-in wakes the screen anyway).
+        if [ "$st" != connected ] && ! phone_is_on; then nap 15; else nap 3; fi
     done
 }
 
