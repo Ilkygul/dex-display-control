@@ -82,7 +82,7 @@ Detailed results: [docs/TESTING.md](docs/TESTING.md). How it works and what was 
 
 ## Install
 
-1. Download `dex-display-control-v2.9.1.zip` from the [releases](../../releases).
+1. Download `dex-display-control-v2.9.2.zip` from the [releases](../../releases).
 2. KernelSU Manager > Modules > Install from storage, pick the zip.
 3. Reboot (or start it once with `su -c 'sh /data/adb/modules/fold-display/service.sh'`).
 4. KernelSU Manager > Modules > DeX Display Control > open the WebUI.

@@ -118,7 +118,7 @@
   <div class="row">
     <div>
       <div>Bring DeX back after a reconnect</div>
-      <div class="hint">A mode change reconnects the monitor. Now and then Samsung's DeX does not take the monitor back afterwards (it stays in screen mirroring). With this on, the module reconnects once more if DeX was running before and is not back within 25 s. If you use screen mirroring on purpose it is left alone; switch this off if you never want DeX restored.</div>
+      <div class="hint">Reconnects once more if DeX does not come back after a mode change.</div>
     </div>
     <label class="switch"><input type="checkbox" id="dexRecSw"><span class="slider"></span></label>
   </div>
@@ -126,7 +126,7 @@
   <div class="row">
     <div>
       <div>Lower to 60 Hz while the phone is hot</div>
-      <div class="hint">When Samsung's heat protection holds the GPU back hard, apps cannot keep up with a fast monitor anyway (about 50 fps at 5120 × 2160). Then the monitor goes to 60 Hz at the same resolution for smooth 60 fps, and back to your choice once the phone has cooled down for a few minutes. Checked every 30 s; your saved choice is not changed.</div>
+      <div class="hint">60 Hz while heat holds the GPU back; back to your choice when cool.</div>
     </div>
     <label class="switch"><input type="checkbox" id="thermSw"><span class="slider"></span></label>
   </div>
@@ -135,19 +135,19 @@
   <div class="row">
     <div>
       <div>Temperature override: let the phone run hotter (experimental)</div>
-      <div class="hint">For a phone lying untouched next to a monitor. Samsung slows the GPU and CPU from about 43-45 °C estimated skin temperature, a limit meant for a phone in your hand. The override keeps them at full speed while a monitor is connected, until one of the limits below is reached; then Samsung's limits come back until it has cooled down a few degrees. The chip's own protection in the kernel always stays active, whatever you choose here.</div>
+      <div class="hint">Ignores Samsung's heat limits while a monitor is connected, up to your limits below.</div>
     </div>
     <label class="switch"><input type="checkbox" id="deskSw"><span class="slider"></span></label>
   </div>
   <div class="hint" id="deskState" style="margin-top:6px"></div>
   <div style="margin-top:10px">Battery limit</div>
-  <div class="hint" style="margin:2px 0 6px">The part that ages from heat. Above about 45 °C a lithium battery wears noticeably faster; the charger itself slows and stops charging when the battery gets too hot, whatever you pick.</div>
+  <div class="hint" style="margin:2px 0 6px">Ages faster above about 45 °C.</div>
   <div class="chips" id="deskBat"></div>
   <div style="margin-top:10px">Board limit (sensor next to the chip)</div>
-  <div class="hint" style="margin:2px 0 6px">The chip itself may run much hotter (the kernel steps in around 95-105 °C on the die).</div>
+  <div class="hint" style="margin:2px 0 6px">The kernel still protects the chip itself (about 95-105 °C).</div>
   <div class="chips" id="deskAp"></div>
   <div style="margin-top:10px">Skin estimate limit</div>
-  <div class="hint" style="margin:2px 0 6px">Only matters if you touch the phone. Samsung starts at about 43-45 °C.</div>
+  <div class="hint" style="margin:2px 0 6px">Only matters when you hold the phone.</div>
   <div class="chips" id="deskSkin"></div>
 </div>
 
@@ -156,14 +156,14 @@
   <div class="row">
     <div>
       <div>Keep phone screen off while a monitor is connected</div>
-      <div class="hint">Only the side key, unplugging, a restart or your Termux buttons wake it.</div>
+      <div class="hint">Only the side key, unplugging, a restart or Termux wake it.</div>
     </div>
     <label class="switch"><input type="checkbox" id="guardSw"><span class="slider"></span></label>
   </div>
   <div class="hint" id="phoneState" style="margin-top:8px"></div>
   <div class="sep"></div>
   <div>Phone screen refresh rate while a monitor is connected</div>
-  <div class="hint" style="margin:2px 0 10px">Saves power when you use the phone screen during DeX. Your normal setting comes back when you unplug. DeX may limit the phone screen to 60 Hz on its own.</div>
+  <div class="hint" style="margin:2px 0 10px">Used while a monitor is connected; restored when you unplug.</div>
   <div class="chips" id="innerChips"></div>
   <div class="msg" id="phoneMsg"></div>
 </div>
@@ -171,14 +171,14 @@
 <details class="card" id="expCard">
   <summary>Experimental</summary>
   <div>Extra refresh rates (custom timings)</div>
-  <div class="hint">Every mode change while an experimental option is on must be confirmed within 30 seconds, or the previous mode comes back by itself. So a black monitor fixes itself.</div>
+  <div class="hint">With these on, keep a new mode within 30 s or it switches back.</div>
   <div class="sep"></div>
   <div>Compression (DSC)</div>
-  <div class="hint">Display Stream Compression, built into the phone's display chip but switched off by Samsung. With it the cable is no longer the limit, the monitor's decoder is: on an LG 40U990A 5120 × 2160 runs at 100 and 110 Hz in 10-bit colour (tested). Costs about 0.1 W; a higher refresh rate itself costs about 17 mW per Hz. Modes too fast for the monitor's decoder are crossed out in the list (the LG's own 120 Hz would stay black).</div>
+  <div class="hint">Compression: higher refresh rates in 10-bit (LG 40U990A: 110 Hz). Too-fast modes are crossed out.</div>
   <div class="row" style="margin-top:10px">
     <div>
       <div>Check new monitors automatically</div>
-      <div class="hint">A monitor that was not checked yet is checked once when it connects (one extra reconnect). If it supports DSC, compression is switched on; keep it within 45 s or it goes off again by itself.</div>
+      <div class="hint">Checks a new monitor once when it connects; keep it within 45 s.</div>
     </div>
     <label class="switch"><input type="checkbox" id="dscAutoSw"><span class="slider"></span></label>
   </div>
@@ -187,7 +187,7 @@
   <div class="msg" id="dscMsg"></div>
   <div class="sep"></div>
   <div>Extra refresh rates (custom timings)</div>
-  <div class="hint">Adds faster versions of the monitor's own native mode, as far as the link (17.28 Gbit/s), the monitor's stated maximum and, with compression, its decoder allow. Examples on an LG 40U990A: 70, 75 and 80 Hz in 6-bit colour without compression; 105 and 110 Hz with compression. Remembered for this monitor and applied again at every connection (one extra reconnect, about 10 s). Other monitors are always read with their own data.</div>
+  <div class="hint">Adds faster versions of the monitor's native mode that fit the link (and decoder).</div>
   <button class="wide" id="expBtn">Add extra refresh rates for this monitor</button>
   <div class="hint" id="expState" style="margin-top:8px"></div>
   <div class="msg" id="expMsg"></div>
@@ -196,11 +196,11 @@
 <details class="card">
   <summary>Technical details</summary>
   <dl class="facts" id="tech" style="margin-top:4px"></dl>
-  <p><b>Refresh rate</b> and <b>resolution</b> at the top are the mode the display engine drives the cable with (SurfaceFlinger). <b>Link timing</b>, <b>DP link</b>, <b>Link utilisation</b> and <b>Pixel clock</b> come from the line the kernel writes when the monitor connects, so they change only at the next (re)connection. The monitor's name and EDID are read from the connector on every refresh.</p>
-  <p><b>Frames per second</b> counts the frames SurfaceFlinger composed for the monitor since the previous refresh. It drops when nothing on screen changes; with motion (scrolling, video, testufo.com) it should match the refresh rate.</p>
-  <p><b>Link utilisation</b> is pixel clock × bits per pixel against what the link carries after 8b/10b coding. The phone always trains the link at HBR2 with 4 lanes: 17.28 Gbit/s of pixel data. That is the real ceiling: 5120 × 2160 @ 60 Hz only fits at 8-bit colour; 5120 × 2160 @ 80 Hz fits at 6-bit (the kernel picks the deepest colour that fits). If the lanes drop to 2 (some hubs), half is left.</p>
-  <p><b>Phone power</b> is the whole phone's draw: the battery fuel gauge's system current times the system voltage, read once a second while this page is visible, averaged here over the last 30 seconds. It is the same whether the phone runs on its battery or on the monitor's power. Measured on a Fold8 with an LG 40U990A and a still DeX screen: 60 Hz about 2.0 W, 60 Hz with DSC about 2.15 W, 80 Hz (6-bit) about 2.4 W, 110 Hz with DSC about 3.0 W; DSC itself costs about 0.1 W, each extra Hz about 17 mW. Moving content costs more.</p>
-  <p>This page only measures while it is open and visible: once a second, about 50 ms of work each time. Closed, it costs nothing. The background watcher reads one file every 3 seconds.</p>
+  <p><b>Refresh rate</b> and <b>resolution</b> come from SurfaceFlinger; <b>link</b> values from the kernel at the last (re)connect.</p>
+  <p><b>Frames per second</b> = frames sent to the monitor; lower when nothing moves.</p>
+  <p><b>Link utilisation</b> = pixel clock × bits per pixel of the 17.28 Gbit/s link (HBR2 × 4).</p>
+  <p><b>Phone power</b> = fuel gauge system current × voltage, whole phone.</p>
+  <p>Measures only while this page is open and visible.</p>
 </details>
 
 </main>
@@ -548,7 +548,7 @@
     if (s.kern && s.kern.bpp) f += fact("Colour depth", s.kern.bpp / 3 + "-bit per colour" + (s.dsc_active === "1" ? ", compressed (DSC)" : ""));
     el("facts").innerHTML = f; el("tech").innerHTML = t;
     const anyAdded = Object.keys(s.extraBpp).length > 0, anyOver = Object.values(s.mi).some((x) => x.over);
-    el("legend").textContent = "Bits = colour depth per colour channel (8-bit = 16.7 million colours, 10-bit = 1.07 billion, 6-bit = 262,144); DSC = sent compressed." + (anyAdded ? " + = added by this module." : "") + (anyOver ? " Crossed out = too fast for the monitor's DSC decoder." : "");
+    el("legend").textContent = "bit = colour depth · DSC = compressed" + (anyAdded ? " · + = added" : "") + (anyOver ? " · crossed out = too fast for the decoder" : "");
     el("fixBtn").style.display = dexMismatch && !busy ? "" : "none";
     reset.disabled = busy || !s.saved;
 

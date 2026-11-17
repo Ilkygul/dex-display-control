@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.9.2 (2026-11-17)
+
+- Page: every setting explanation shortened to one short sentence; shorter legend and technical notes.
+
 ## v2.9.1 (2026-11-17)
 
 - Live panel: fixed explanations removed and labels shortened; only values that change.
