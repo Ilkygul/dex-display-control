@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeX Display Control</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1b1d21; --muted: #646a73; --line: #e2e5ea;
+    --accent: #2f6fde; --accent-soft: #e6eefc; --ok: #1f8a4c; --warn: #b4501f; --bar: #e9ecf1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111316; --card: #1b1e23; --text: #eceef1; --muted: #9aa1ab; --line: #2b2f36;
+      --accent: #6b9cf0; --accent-soft: #1e2a3f; --ok: #4cc283; --warn: #f09a6b; --bar: #2a2f37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 20px; margin: 4px 0 14px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .label, .hint { color: var(--muted); font-size: 13px; }
+  .name { font-size: 17px; font-weight: 600; margin: 2px 0 10px; }
+  .now { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .hz { font-size: 40px; font-weight: 700; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
+  .res { font-size: 17px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin-top: 14px; font-size: 14px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; background: var(--bar); border-radius: 3px; margin-top: 5px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); }
+  .warn { color: var(--warn); } .okc { color: var(--ok); }
+  .group { margin-top: 12px; } .group:first-child { margin-top: 0; }
+  .group-title { font-weight: 600; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { font: inherit; border-radius: 10px; border: 1px solid var(--line); background: transparent;
+           color: var(--text); padding: 9px 14px; cursor: pointer; min-height: 40px; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip.saved:not(.active) { border-color: var(--accent); color: var(--accent); }
+  .wide { width: 100%; margin-top: 10px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .switch { position: relative; width: 52px; height: 30px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--bar); border-radius: 15px; transition: .2s; cursor: pointer; }
+  .slider:before { content: ""; position: absolute; width: 24px; height: 24px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider:before { transform: translateX(22px); }
+  .msg { font-size: 14px; margin-top: 10px; min-height: 1.4em; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--warn); }
+  .empty { color: var(--muted); }
+  details.card > summary { cursor: pointer; font-weight: 600; list-style-position: inside; }
+  details.card[open] > summary { margin-bottom: 10px; }
+  details p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .sep { border-top: 1px solid var(--line); margin: 14px 0; }
+</style>
+</head>
+<body>
+<h1>DeX Display Control</h1>
+
+<div class="card">
+  <div class="label">Monitor</div>
+  <div class="name" id="name">Loading…</div>
+  <div class="now"><span class="hz" id="hz">–</span><span class="res" id="res"></span></div>
+  <dl class="facts" id="facts"></dl>
+  <button class="wide" id="fixBtn" style="display:none">Match the DeX desktop to the monitor</button>
+  <div class="hint" id="stamp" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>Resolution and refresh rate</h2>
+  <div id="modes" class="empty">–</div>
+  <button class="wide" id="resetBtn">Use the monitor's default</button>
+  <div class="msg" id="msg"></div>
+</div>
+
+<div class="card">
+  <h2>Phone screen</h2>
+  <div class="row">
+    <div>
+      <div>Keep phone screen off while a monitor is connected</div>
+      <div class="hint">Only the side key, unplugging, a restart or your Termux buttons wake it.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="guardSw"><span class="slider"></span></label>
+  </div>
+  <div class="hint" id="phoneState" style="margin-top:8px"></div>
+  <div class="sep"></div>
+  <div>Phone screen refresh rate while a monitor is connected</div>
+  <div class="hint" style="margin:2px 0 10px">Saves power when you use the phone screen during DeX. Your normal setting (Galaxy Max Hz) comes back when you unplug. DeX may limit the phone screen to 60 Hz on its own.</div>
+  <div class="chips" id="innerChips"></div>
+  <div class="msg" id="phoneMsg"></div>
+</div>
+
+<details class="card" id="expCard">
+  <summary>Experimental</summary>
+  <div class="row">
+    <div>
+      <div>4K at 75 Hz (custom timing)</div>
+      <div class="hint">Adds a 3840 × 2160 @ 75 Hz mode within the Fold's limits (655 MHz pixel clock, 8-bit colour). Tested on a Dell U3225QE. Needs one re-plug of this monitor after switching on, and again on every new connection.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="expSw"><span class="slider"></span></label>
+  </div>
+  <div class="hint" id="expState" style="margin-top:8px"></div>
+  <div class="msg" id="expMsg"></div>
+</details>
+
+<details class="card">
+  <summary>Technical details</summary>
+  <dl class="facts" id="tech" style="margin-top:4px"></dl>
+  <p><b>Refresh rate</b> and <b>resolution</b> at the top are the mode the display engine drives the cable with (SurfaceFlinger). <b>Link timing</b>, <b>DP link</b>, <b>Link utilisation</b> and <b>Pixel clock</b> come from the line the kernel writes when the monitor connects, so they change only at the next (re)connection. The monitor's name and EDID are read from the connector on every refresh.</p>
+  <p><b>Frames per second</b> counts the frames SurfaceFlinger composed for the monitor since the previous refresh. It drops when nothing on screen changes; with motion (scrolling, video, testufo.com) it should match the refresh rate.</p>
+  <p><b>Link utilisation</b> is pixel clock × bits per pixel against what the link carries after 8b/10b coding. The Fold's DisplayPort output is limited to 675 MHz pixel clock (device tree qcom,max-pclk-frequency-khz), which is why 4K stops at 75 Hz.</p>
+  <p>This page only measures while it is open and visible: once a second, about 50 ms of work each time. Closed, it costs nothing. The background watcher reads one file every 3 seconds.</p>
+</details>
+
+<script>
+  const SCRIPT = "/data/adb/modules/fold-display/display.sh";
+  const FOLD_MAX_PCLK = 675;
+  const INNER_RATES = [120, 80, 60, 48, 30, 20];
+  let cb = 0, busy = false, last = null, prevSample = null, fps = null, dexMismatch = false;
+
+  function run(cmd) {
+    return new Promise((resolve) => {
+      if (typeof ksu === "undefined") { resolve({ errno: 1, stdout: "", stderr: "Open this page from KernelSU Manager." }); return; }
+      const name = "ddc" + (++cb);
+      window[name] = (errno, stdout, stderr) => { delete window[name]; resolve({ errno, stdout, stderr }); };
+      try { ksu.exec(cmd, "{}", name); } catch (e) { delete window[name]; resolve({ errno: 1, stdout: "", stderr: String(e) }); }
+    });
+  }
+
+  function parse(out) {
+    const s = { modes: [], profiles: {} };
+    for (const line of out.split("\n")) {
+      const i = line.indexOf("="); if (i < 0) continue;
+      const k = line.slice(0, i), v = line.slice(i + 1).trim();
+      if (k === "mode") { if (!s.modes.includes(v)) s.modes.push(v); }
+      else if (k === "profile") { const j = v.indexOf(":"); s.profiles[v.slice(0, j)] = v.slice(j + 1); }
+      else s[k] = v;
+    }
+    s.id = (s.edid || "").slice(16, 32);
+    s.saved = s.profiles[s.id + "-" + s.variant] || s.profiles[s.id] || "";
+    s.edidName = edidName(s.edid || "");
+    s.kern = null;
+    if (s.link) {
+      const bar = s.link.indexOf("|"), lid = s.link.slice(0, bar), l = s.link.slice(bar + 1);
+      const m = /^(\d+)\([^)]*\)x(\d+)\([^)]*\)@(\d+)fps (\d+)bpp (\d+)Khz (\d+)LR (\d+)Ln/.exec(l);
+      if (m && lid === s.id) s.kern = { w: +m[1], h: +m[2], hz: +m[3], bpp: +m[4], mhz: +m[5] / 1000, lr: +m[6], ln: +m[7] };
+    }
+    return s;
+  }
+
+  function edidName(hex) {
+    for (let o = 54; o <= 108; o += 18) {
+      if (hex.substr(o * 2, 6) === "000000" && hex.substr(o * 2 + 6, 2) === "fc") {
+        let n = "";
+        for (let i = 5; i < 18; i++) { const c = parseInt(hex.substr((o + i) * 2, 2), 16); if (c === 10) break; n += String.fromCharCode(c); }
+        return n.trim();
+      }
+    }
+    return "";
+  }
+
+  function edidTimings(hex) {
+    const b = []; for (let i = 0; i + 1 < hex.length; i += 2) b.push(parseInt(hex.substr(i, 2), 16));
+    const out = [];
+    const dtd = (o) => {
+      const pclk = b[o] | (b[o + 1] << 8); if (!pclk) return;
+      const ha = b[o + 2] | ((b[o + 4] >> 4) << 8), hb = b[o + 3] | ((b[o + 4] & 15) << 8);
+      const va = b[o + 5] | ((b[o + 7] >> 4) << 8), vb = b[o + 6] | ((b[o + 7] & 15) << 8);
+      if (!ha || !va) return;
+      out.push({ w: ha, h: va, hz: (pclk * 10000) / ((ha + hb) * (va + vb)), mhz: pclk / 100 });
+    };
+    for (let o = 54; o <= 108; o += 18) if (o + 18 <= b.length) dtd(o);
+    for (let e = 128; e + 128 <= b.length; e += 128) {
+      if (b[e] !== 2) continue;
+      const d = b[e + 2]; if (!d) continue;
+      for (let o = e + d; o + 18 <= e + 127; o += 18) dtd(o);
+    }
+    return out;
+  }
+
+  function pclkFor(s, w, h, hz) {
+    const t = edidTimings(s.edid || "").find((x) => x.w === w && x.h === h && Math.abs(x.hz - hz) < 1.5);
+    return t ? { mhz: t.mhz, exact: true } : { mhz: (w * h * hz * 1.12) / 1e6, exact: false };
+  }
+
+  const hzOf = (m) => Math.round(parseFloat(m.split("@")[1]));
+  const resOf = (m) => m.split("@")[0];
+  const keyOf = (m) => resOf(m).replace("x", ":") + ":" + hzOf(m);
+  const pretty = (r) => r.replace("x", " × ");
+  const fmtKey = (k) => { const p = k.split(":"); return pretty(p[0] + "x" + p[1]) + " @ " + p[2] + " Hz"; };
+  const nf = (x, d) => x.toFixed(d);
+  const fact = (dt, dd, extra) => "<dt>" + dt + "</dt><dd>" + dd + (extra || "") + "</dd>";
+  const warn = (t) => ' <span class="warn">' + t + "</span>";
+  const el = (id) => document.getElementById(id);
+
+  function setMsg(id, text, cls) { const e = el(id); e.textContent = text || ""; e.className = "msg " + (cls || ""); }
+
+  function renderPhone(s) {
+    el("guardSw").checked = s.phone_guard === "1";
+    el("guardSw").disabled = busy;
+    let st = "Phone screen is " + (s.phone === "on" ? "on" : "off") + ".";
+    if (s.phone_guard === "1") {
+      if (s.connected !== "1") st += " The switch is on; it takes effect when a monitor is connected.";
+      else st += s.armed === "1" ? " Kept off." : " Allowed on (side key or Termux); kept off again once it turns off.";
+    }
+    if (s.inner_rate) st += " Phone screen refresh now: " + Math.round(parseFloat(s.inner_rate)) + " Hz.";
+    el("phoneState").textContent = st;
+    const box = el("innerChips"); box.innerHTML = "";
+    const cur = s.inner_hz || "";
+    const mk = (val, label) => {
+      const b = document.createElement("button");
+      b.className = "chip" + ((val === "off" ? cur === "" : cur === String(val)) ? " active" : "");
+      b.textContent = label; b.disabled = busy;
+      b.onclick = () => innerSet(val);
+      box.appendChild(b);
+    };
+    mk("off", "Don't change");
+    for (const r of INNER_RATES) mk(r, r + " Hz");
+  }
+
+  function renderExp(s) {
+    const sw = el("expSw"), st = el("expState");
+    const custom = s.custom || "";
+    const has75 = s.modes.some((m) => keyOf(m) === "3840:2160:75");
+    sw.checked = s.exp75 === "1";
+    sw.disabled = busy || s.connected !== "1";
+    if (s.connected !== "1") { st.textContent = "Connect a monitor to use this."; return; }
+    if (custom.startsWith("armed:")) st.innerHTML = '<span class="warn">Unplug this monitor and plug it back in within 60 seconds to activate 4K 75 Hz.</span>';
+    else if (has75) st.innerHTML = '<span class="okc">Active: 3840 × 2160 @ 75 Hz is available above.</span>';
+    else if (s.exp75 === "1") st.textContent = "On for this monitor; it is prepared on the next connection.";
+    else st.textContent = "Off.";
+  }
+
+  function render(s) {
+    el("stamp").textContent = "Updated " + new Date().toLocaleTimeString();
+    renderPhone(s);
+    renderExp(s);
+    const modes = el("modes"), reset = el("resetBtn");
+    if (s.connected !== "1") {
+      el("name").textContent = "No monitor connected"; el("hz").textContent = "–"; el("res").textContent = "";
+      el("facts").innerHTML = ""; el("tech").innerHTML = ""; el("fixBtn").style.display = "none";
+      modes.className = "empty"; modes.textContent = "Connect a monitor over USB-C."; reset.disabled = true; return;
+    }
+    el("name").textContent = s.name || s.edidName || "Unknown monitor";
+    el("hz").textContent = s.current ? hzOf(s.current) + " Hz" : "…";
+    el("res").textContent = s.current ? pretty(resOf(s.current)) : "";
+
+    let f = "", t = "";
+    if (s.current) {
+      const sfHz = hzOf(s.current);
+      const app = s.pacesetter === "1" ? Math.round(parseFloat(s.render || sfHz)) : Math.round(parseFloat(s.apprate || 0));
+      f += fact(s.dex === "1" ? "DeX runs at" : "Apps run at", app + " Hz", s.pacesetter === "1" ? "" : warn("(following the phone screen; fixing…)"));
+      if (fps !== null) f += fact("Frames per second", nf(fps, 0), ' <span class="label">(measured; lower when nothing moves)</span>');
+      dexMismatch = !!(s.dexsize && s.dexsize !== resOf(s.current));
+      if (s.dexsize) f += fact(s.dex === "1" ? "DeX desktop" : "Android desktop", pretty(s.dexsize),
+        dexMismatch ? warn("(does not match " + pretty(resOf(s.current)) + ": zoomed or cropped)") : "");
+      t += fact("Composition rate", Math.round(parseFloat(s.render || sfHz)) + " Hz");
+      t += fact("App vsync source", s.pacesetter === "1" ? "this monitor (pacesetter)" : "phone screen at " + Math.round(parseFloat(s.apprate || 0)) + " Hz");
+    } else {
+      f += fact("Android", "adding the monitor…");
+    }
+    f += fact("Saved for this monitor", s.saved ? fmtKey(s.saved) : (s.dexpref ? "nothing; following DeX's choice " + fmtKey(s.dexpref) : "nothing; monitor default"));
+
+    if (s.kern) {
+      const kRes = s.kern.w + "x" + s.kern.h;
+      t += fact("Link timing (at connect)", pretty(kRes) + " @ " + s.kern.hz + " Hz",
+        s.current && (kRes !== resOf(s.current) || s.kern.hz !== hzOf(s.current)) ? warn("(differs: from the previous connection)") : "");
+      const per = s.kern.lr * 0.27, raw = s.kern.ln * per, eff = raw * 0.8;
+      const names = { 6: "RBR", 10: "HBR", 20: "HBR2", 30: "HBR3" };
+      t += fact("DP link", s.kern.ln + " lanes × " + nf(per, 2) + " Gbit/s" + (names[s.kern.lr] ? " (" + names[s.kern.lr] + ")" : "") + " = " + nf(raw, 1) + " Gbit/s");
+      const need = (s.kern.mhz * s.kern.bpp) / 1000, pct = Math.min(100, (need / eff) * 100);
+      t += fact("Link utilisation", nf(need, 2) + " of " + nf(eff, 2) + " Gbit/s (" + nf(pct, 0) + "%, " + s.kern.bpp + " bits per pixel)",
+        '<div class="bar"><div style="width:' + pct.toFixed(1) + '%"></div></div>');
+      t += fact("Pixel clock", nf(s.kern.mhz, 1) + " of max " + FOLD_MAX_PCLK + " MHz");
+    } else if (s.current) {
+      const r = resOf(s.current).split("x").map(Number), p = pclkFor(s, r[0], r[1], hzOf(s.current));
+      t += fact("Pixel clock", (p.exact ? "" : "≈ ") + nf(p.mhz, 1) + " of max " + FOLD_MAX_PCLK + " MHz");
+      t += fact("DP link", "known after the next (re)connection");
+    }
+    if (s.density) t += fact("DeX density", s.density + " dpi");
+    t += fact("Monitor id", s.id + (s.variant ? " · variant " + s.variant : ""));
+    el("facts").innerHTML = f; el("tech").innerHTML = t;
+    el("fixBtn").style.display = dexMismatch && !busy ? "" : "none";
+    reset.disabled = busy || !s.saved;
+
+    if (!s.current) { modes.className = "empty"; modes.textContent = "Waiting for Android to add the monitor…"; return; }
+    const groups = {};
+    for (const m of s.modes) (groups[resOf(m)] = groups[resOf(m)] || []).push(m);
+    const order = Object.keys(groups).sort((a, b) => { const [aw, ah] = a.split("x").map(Number), [bw, bh] = b.split("x").map(Number); return bw * bh - aw * ah; });
+    const savedKey = s.saved ? s.saved.split(":").slice(0, 3).join(":") : "", currentKey = keyOf(s.current);
+    modes.className = ""; modes.innerHTML = "";
+    for (const r of order) {
+      const g = document.createElement("div"); g.className = "group";
+      const tt = document.createElement("div"); tt.className = "group-title"; tt.textContent = pretty(r);
+      const chips = document.createElement("div"); chips.className = "chips";
+      const seen = new Set();
+      for (const m of groups[r].sort((a, b) => hzOf(b) - hzOf(a))) {
+        const key = keyOf(m); if (seen.has(key)) continue; seen.add(key);
+        const b = document.createElement("button");
+        b.className = "chip" + (key === currentKey ? " active" : "") + (key === savedKey ? " saved" : "");
+        b.textContent = hzOf(m) + " Hz"; b.disabled = busy;
+        b.onclick = () => apply(key, fmtKey(key), key === currentKey, false);
+        chips.appendChild(b);
+      }
+      g.appendChild(tt); g.appendChild(chips); modes.appendChild(g);
+    }
+  }
+
+  function sample(s) {
+    const t = parseFloat(s.t), f = parseInt(s.frames, 10);
+    if (!isNaN(t) && !isNaN(f)) {
+      if (prevSample && t > prevSample.t && f >= prevSample.f) fps = (f - prevSample.f) / (t - prevSample.t);
+      prevSample = { t, f };
+    } else { prevSample = null; fps = null; }
+  }
+
+  async function status(full) { return parse((await run("sh " + SCRIPT + " status" + (full ? " full" : ""))).stdout || ""); }
+
+  async function refresh() {
+    if (busy) return;
+    const r = await run("sh " + SCRIPT + " status");
+    if (r.errno !== 0 && !r.stdout) { setMsg("msg", r.stderr || "Could not read the status", "err"); return; }
+    last = parse(r.stdout); sample(last); render(last);
+  }
+
+  async function waitFor(check) {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((ok) => setTimeout(ok, 1500));
+      const s = await status(true);
+      if (check(s)) return s;
+    }
+    return null;
+  }
+
+  async function apply(key, label, isCurrent, force) {
+    if (busy) return;
+    if (!force && isCurrent && last && last.saved && last.saved.startsWith(key) && !dexMismatch) { setMsg("msg", "This monitor already runs " + label + ".", "ok"); return; }
+    busy = true; render(last); setMsg("msg", "Switching to " + label + ". The monitor reconnects…");
+    const out = parse((await run("sh " + SCRIPT + " set " + key)).stdout || "");
+    if (out.error) { busy = false; setMsg("msg", out.error, "err"); refresh(); return; }
+    const s = await waitFor((x) => x.current && keyOf(x.current) === key && x.pacesetter === "1" && x.dexsize === resOf(x.current));
+    busy = false; prevSample = null; fps = null;
+    if (s) { last = s; render(s); setMsg("msg", "Done: " + label + ".", "ok"); }
+    else { setMsg("msg", "The monitor is not running " + label + " yet. Does it support that mode over this connection?", "err"); refresh(); }
+  }
+
+  el("fixBtn").onclick = () => { if (last && last.current) apply(keyOf(last.current), fmtKey(keyOf(last.current)), true, true); };
+
+  el("resetBtn").onclick = async () => {
+    if (busy) return;
+    busy = true; render(last); setMsg("msg", "Going back to the monitor's default…");
+    const out = parse((await run("sh " + SCRIPT + " reset")).stdout || "");
+    if (out.error) { busy = false; setMsg("msg", out.error, "err"); refresh(); return; }
+    const s = await waitFor((x) => !!x.current && !x.saved && x.pacesetter === "1" && x.dexsize === resOf(x.current));
+    busy = false; prevSample = null; fps = null;
+    if (s) { last = s; render(s); setMsg("msg", "Done: the monitor's default mode.", "ok"); } else refresh();
+  };
+
+  el("guardSw").onchange = async (e) => {
+    const on = e.target.checked;
+    busy = true;
+    const out = parse((await run("sh " + SCRIPT + " phone-guard " + (on ? "on" : "off"))).stdout || "");
+    busy = false;
+    if (out.error) setMsg("phoneMsg", out.error, "err");
+    else setMsg("phoneMsg", on ? "On. The phone screen stays off while a monitor is connected; press the side key to wake it." : "Off. The phone screen behaves normally again.", "ok");
+    refresh();
+  };
+
+  async function innerSet(val) {
+    busy = true;
+    const out = parse((await run("sh " + SCRIPT + " inner-hz " + val)).stdout || "");
+    busy = false;
+    if (out.error) setMsg("phoneMsg", out.error, "err");
+    else setMsg("phoneMsg", val === "off" ? "The phone screen keeps your normal refresh rate." : "Phone screen: " + val + " Hz while a monitor is connected.", "ok");
+    refresh();
+  }
+
+  el("expSw").onchange = async (e) => {
+    const on = e.target.checked;
+    busy = true;
+    const out = parse((await run("sh " + SCRIPT + " exp75 " + (on ? "on" : "off"))).stdout || "");
+    busy = false;
+    if (out.error) { setMsg("expMsg", out.error, "err"); e.target.checked = !on; }
+    else if (on) setMsg("expMsg", out.replug ? "Prepared. Unplug the monitor and plug it back in within 60 seconds, then pick 3840 × 2160 @ 75 Hz." : "On.", "ok");
+    else setMsg("expMsg", out.replug ? "Off. 4K 75 Hz disappears when you unplug the monitor." : "Off.", "ok");
+    refresh();
+  };
+
+  let polling = false;
+  async function loop() {
+    if (polling) return;
+    polling = true;
+    while (!document.hidden) { await refresh(); await new Promise((ok) => setTimeout(ok, 1000)); }
+    polling = false;
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { prevSample = null; fps = null; loop(); } });
+  loop();
+</script>
+</body>
+</html>

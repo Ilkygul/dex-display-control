@@ -1,0 +1,30 @@
+#!/system/bin/sh
+# DeX Display Control, uninstall: put everything this module changed back.
+B=/data/adb/fold-display
+
+# Stop the watcher and the phone-screen guard.
+rm -f "$B/guard.run"
+for f in watch.pid guard.pid; do
+    p=$(cat "$B/$f" 2>/dev/null)
+    [ -n "$p" ] && kill "$p" 2>/dev/null
+done
+for p in $(pidof getevent); do grep -q event4 "/proc/$p/cmdline" 2>/dev/null && kill "$p"; done
+
+# Phone screen refresh rate: the user's own values.
+if [ -f "$B/refresh.saved" ]; then
+    read -r mn pk < "$B/refresh.saved"
+    case "$mn" in null|"") settings delete system min_refresh_rate ;; *) settings put system min_refresh_rate "$mn" ;; esac
+    case "$pk" in null|"") settings delete system peak_refresh_rate ;; *) settings put system peak_refresh_rate "$pk" ;; esac
+fi
+
+# Composer mode override, app frame clock, custom EDID.
+setprop vendor.display.hdmi_cfg_idx ""
+service call SurfaceFlingerAIDL 85 >/dev/null 2>&1
+if [ -f "$B/custom.active" ] || [ -f "$B/custom.armed" ]; then
+    [ -e /sys/kernel/debug/drm_dp/edid ] && printf 'zz' > /sys/kernel/debug/drm_dp/edid 2>/dev/null
+fi
+
+# Phone screen on, in case the guard was holding it off.
+cmd power wakeup --display-id 0 >/dev/null 2>&1
+
+rm -rf "$B"
