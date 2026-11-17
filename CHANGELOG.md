@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.8.0 (2026-11-17)
+
+- Temperature override now also releases Samsung's own limit drivers: `cpufreq_limit`
+  (cpufreq_max_limit, held the fast cores at 2.88 GHz) and `/sys/kernel/gpu/gpu_max_clock` (held the
+  GPU at 422 MHz); the CPU limit files are locked against Samsung's rewrites while it is active and
+  handed back (owner, mode, value) afterwards, also after a crash.
+- Load test: with the override GPU 1300 MHz and CPU 4.74 GHz throughout, about twice the frames of
+  Samsung's limits (GPU 160 MHz, CPU 0.88 GHz).
+- New switch "Bring DeX back after a reconnect" (`dex-recover on|off`, on by default).
+- 60 Hz heat fallback: with the override active it returns once the GPU is no longer held back
+  (the thermal status stays high on purpose).
+- Log shows the override limits actually in use.
+
 ## v2.7.1 (2026-11-17)
 
 - "Desk mode" renamed to "Temperature override" (page, docs, log); commands `temp-override on|off`

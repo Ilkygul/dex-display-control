@@ -220,8 +220,35 @@ unpace() { service call SurfaceFlingerAIDL 85 >/dev/null 2>&1 && log "pacesetter
 
 # Point composer and DisplayManager at mode $1 (W:H:HZ, or empty for the monitor's own default)
 # and reconnect so both take it. $2 = SurfaceFlinger display id (for the DisplayManager lookup).
+dex_recover_cmd() {
+    case "$1" in
+        on) put_set dex_recover 1; log "switch: bring DeX back after a reconnect ON"; echo "ok=1" ;;
+        off) put_set dex_recover 0; log "switch: bring DeX back after a reconnect OFF"; echo "ok=1" ;;
+        *) echo "error=use: dex-recover on|off" ;;
+    esac
+}
+
+# DeX running on the external display right now?
+dex_on() {
+    s=$(ext_sf_id); [ -n "$s" ] || return 1
+    dumpsys display 2>/dev/null | grep -F "mBaseDisplayInfo=DisplayInfo{" | grep -F "uniqueId \"local:$s\"" | grep -q FLAG_EXTERNAL_DEX_HOSTING
+}
+
+# After a reconnect: if DeX was running before ($1 = 1) but Samsung's DeX does not take the monitor
+# back (seen: "desktop ineligible" right after a quick reconnect, the monitor left in mirroring), a
+# second reconnect brings it back.
+dex_recover() {
+    [ "$1" = 1 ] && [ "$(get_set dex_recover)" != 0 ] || return 0
+    i=0; while [ "$i" -lt 13 ]; do sleep 2; dex_on && return 0; i=$((i + 1)); done
+    log "DeX did not come back after the reconnect; reconnecting once more"
+    reconnect
+    i=0; while [ "$i" -lt 13 ]; do sleep 2; dex_on && { log "DeX back"; return 0; }; i=$((i + 1)); done
+    log "DeX still not back; start DeX from the quick settings"
+}
+
 apply_mode() {
     want=$1; sid=$2
+    wasdex=0; dex_on && wasdex=1
     dmid=""; [ -n "$sid" ] && dmid=$(dm_id "$sid")
     if [ -n "$want" ]; then
         setprop $PROP "$want:1"
@@ -236,6 +263,7 @@ EOF
         [ -n "$dmid" ] && dm_clear "$dmid"
     fi
     reconnect
+    dex_recover $wasdex
 }
 
 profile_for() { # $1 id, $2 variant -> saved W:H:HZ (without :1) or empty
@@ -286,6 +314,7 @@ status() {
     read -r v 2>/dev/null < $pol/scaling_max_freq && echo "cpu_max=$v"
     read -r v 2>/dev/null < $pol/cpuinfo_max_freq && echo "cpu_top=$v"
     echo "thermal_fallback=$(get_set thermal_fallback)"
+    echo "dex_recover=$(get_set dex_recover)"
     echo "desk_mode=$(get_set desk_mode)"
     echo "desk_limits=$(get_set desk_bat):$(get_set desk_ap):$(get_set desk_skin)"
     [ -f "$BASE/desk.state" ] && { read -r v < "$BASE/desk.state"; echo "desk_state=$v"; }
@@ -611,6 +640,7 @@ XD=/sys/class/dp_sec/dex
 # Software re-plug: DP output off, optional action in between (while nothing is driven), output on.
 # extdisp.off marks the window, so a crash in between is undone at the next watcher start.
 hw_replug() {
+    hwdex=0; dex_on && hwdex=1
     touch "$BASE/replug.busy" "$BASE/extdisp.off"
     echo "ExtDispOff,1" > $XD 2>/dev/null
     sleep 4
@@ -625,6 +655,7 @@ hw_replug() {
     done
     sleep 2
     rm -f "$BASE/replug.busy"
+    [ "$ok" = 0 ] && dex_recover $hwdex
     return $ok
 }
 
@@ -1148,7 +1179,10 @@ thermal_guard() {
         log "$id: phone hot (GPU level $pl, thermal status $st); $act -> $low until it cools down"
         lock; apply_mode "$low" "$(ext_sf_id)"; unlock; pace
     else
-        if [ "$pl" -le 2 ] && [ "$st" -le 2 ]; then cool_n=$((cool_n + 1)); else cool_n=0; fi
+        dk=""; [ -f "$BASE/desk.state" ] && read -r dk _ < "$BASE/desk.state"
+        # With the temperature override at full speed the status stays high on purpose: then only
+        # whether the GPU is held back counts.
+        if [ "$pl" -le 2 ] && { [ "$st" -le 2 ] || [ "$dk" = on ]; }; then cool_n=$((cool_n + 1)); else cool_n=0; fi
         read -r _ _ t0 < "$THL"
         [ "$cool_n" -ge 3 ] && [ $(($(up_s) - ${t0:-0})) -ge 180 ] && thermal_back "cooled down (GPU level $pl, thermal status $st)"
     fi
@@ -1198,6 +1232,70 @@ $(dumpsys thermalservice 2>/dev/null | sed -n -e 's/^Thermal Status: \([0-9]*\).
 EOF
 }
 
+# Under load Samsung rewrites the CPU limits about every second, faster than a 1 s loop can undo.
+# While the override is active the files go to root:root 644, so Samsung's thermal software
+# (running as system) cannot change them; the original owner and mode come back with its values.
+# Samsung's own CPU limit driver (cpufreq_limit): cpufreq_max_limit holds a "virtual" frequency
+# that its table maps to a maximum per core group (1267200 held the fast cores at 2.88 GHz); -1
+# releases it. Owned radio:system 664, written by Samsung's framework.
+CFL=/sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit
+# Samsung's GPU limit (MHz), separate from Qualcomm's kgsl level: it held the GPU at 422 MHz under
+# load with the kgsl limit already released, and at 160 MHz without the override. system:system 644.
+GMX=/sys/kernel/gpu/gpu_max_clock
+
+desk_cpu_block() {
+    if [ -f $GMX ]; then
+        o_gmx=$(stat -c '%U:%G %a' $GMX 2>/dev/null)
+        read -r gtop _ < /sys/kernel/gpu/gpu_freq_table
+        read -r v < $GMX; [ "$v" != "$gtop" ] && w_gmx=$v
+        chown root:root $GMX 2>/dev/null; chmod 644 $GMX 2>/dev/null; echo "$gtop" > $GMX
+    fi
+    if [ -f $CFL ]; then
+        o_cfl=$(stat -c '%U:%G %a' $CFL 2>/dev/null)
+        read -r v < $CFL; [ "$v" != -1 ] && w_cfl=$v
+        echo -1 > $CFL; chown root:root $CFL 2>/dev/null; chmod 644 $CFL 2>/dev/null
+    fi
+    for i in $POLS; do
+        F=/sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq
+        eval "o_$i=\"$(stat -c '%U:%G %a' $F 2>/dev/null)\""
+        chown root:root $F 2>/dev/null; chmod 644 $F 2>/dev/null
+    done
+}
+desk_cpu_unblock() {
+    if [ -f $GMX ]; then
+        [ -n "$w_gmx" ] && echo "$w_gmx" > $GMX
+        o=${o_gmx:-system:system 644}; chown "${o% *}" $GMX 2>/dev/null; chmod "${o#* }" $GMX 2>/dev/null
+    fi
+    if [ -f $CFL ]; then
+        [ -n "$w_cfl" ] && echo "$w_cfl" > $CFL
+        o=${o_cfl:-radio:system 664}; chown "${o% *}" $CFL 2>/dev/null; chmod "${o#* }" $CFL 2>/dev/null
+    fi
+    for i in $POLS; do
+        F=/sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq
+        eval "o=\$o_$i"; [ -n "$o" ] || o="system:system 664"
+        chown "${o% *}" $F 2>/dev/null; chmod "${o#* }" $F 2>/dev/null
+    done
+}
+
+# Safety net: if the override is not running, the CPU limit files must be Samsung's again.
+desk_cpu_reset() {
+    old=$(cat "$BASE/desk.pid" 2>/dev/null)
+    [ -n "$old" ] && kill -0 "$old" 2>/dev/null && return 0
+    for F in /sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq; do
+        [ "$(stat -c %U $F 2>/dev/null)" = root ] || continue
+        chown system:system $F 2>/dev/null; chmod 664 $F 2>/dev/null
+        log "CPU limit file $F given back to Samsung (override not running)"
+    done
+    if [ -f $GMX ] && [ "$(stat -c %U $GMX 2>/dev/null)" = root ]; then
+        chown system:system $GMX 2>/dev/null; chmod 644 $GMX 2>/dev/null
+        log "Samsung GPU limit given back (override not running)"
+    fi
+    if [ -f $CFL ] && [ "$(stat -c %U $CFL 2>/dev/null)" = root ]; then
+        chown radio:system $CFL 2>/dev/null; chmod 664 $CFL 2>/dev/null
+        log "Samsung CPU limit driver given back (override not running)"
+    fi
+}
+
 desk_run() {
     pidf=$BASE/desk.pid
     old=$(cat "$pidf" 2>/dev/null)
@@ -1211,8 +1309,10 @@ desk_run() {
     read -r w_g < $G
     for i in $POLS; do read -r v < /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; eval "w_$i=$v"; done
     mode=on; t=0; n_over=0
+    desk_cpu_block
     echo "on full speed" > "$BASE/desk.state"
-    log "temperature override on (Samsung's limits overridden; back at battery $DESK_BAT C, board $DESK_AP C, skin $DESK_SKIN C)"
+    lb=$(get_set desk_bat); la=$(get_set desk_ap); ls=$(get_set desk_skin); [ "$ls" = 999 ] && ls=ignored
+    log "temperature override on (Samsung's limits overridden; back at battery ${lb:-41} C, board ${la:-80} C, skin ${ls:-56})"
     while [ -f "$BASE/desk.run" ]; do
         if [ $((t % 5)) = 0 ]; then
             # Limits can be tuned in the settings file (desk_bat, desk_ap, desk_skin); the "cool
@@ -1231,16 +1331,20 @@ desk_run() {
                     mode=back
                     echo "$w_g" > $G
                     for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
+                    desk_cpu_unblock
                     echo "back $why" > "$BASE/desk.state"
                     log "temperature override: $why; Samsung's limits back"
                 fi
             elif [ "$d_bat" -lt "$DESK_BAT_OK" ] && [ "$d_ap" -lt "$DESK_AP_OK" ] && [ "$d_skin" -lt "$DESK_SKIN_OK" ] && [ "$d_st" -lt 5 ]; then
                 mode=on
+                desk_cpu_block
                 echo "on full speed" > "$BASE/desk.state"
                 log "temperature override: cool again (battery $d_bat C, board $d_ap C, skin $d_skin C); full speed"
             fi
         fi
         if [ "$mode" = on ]; then
+            if [ -f $CFL ]; then read -r v < $CFL; [ "$v" != -1 ] && { w_cfl=$v; echo -1 > $CFL; n_over=$((n_over + 1)); }; fi
+            if [ -f $GMX ]; then read -r v < $GMX; [ "$v" != "$gtop" ] && { w_gmx=$v; echo "$gtop" > $GMX; n_over=$((n_over + 1)); }; fi
             read -r g < $G
             if [ "$g" != 0 ]; then w_g=$g; echo 0 > $G; n_over=$((n_over + 1)); fi
             for i in $POLS; do
@@ -1249,6 +1353,8 @@ desk_run() {
                 if [ "$v" != "$top" ]; then eval "w_$i=$v"; echo "$top" > $P/scaling_max_freq; n_over=$((n_over + 1)); fi
             done
         else
+            [ -f $CFL ] && read -r w_cfl < $CFL
+            [ -f $GMX ] && read -r w_gmx < $GMX
             read -r w_g < $G
             for i in $POLS; do read -r v < /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; eval "w_$i=$v"; done
         fi
@@ -1257,6 +1363,7 @@ desk_run() {
     # Hand everything back to Samsung.
     echo "$w_g" > $G
     for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
+    [ "$mode" = on ] && desk_cpu_unblock
     rm -f "$BASE/desk.state" "$pidf"
     log "temperature override off ($n_over limits put back to full speed)"
 }
@@ -1354,6 +1461,7 @@ watch() {
     # Started without a monitor (boot, or after a crash): nothing of ours may stay applied.
     connected || { inner_restore; custom_clear; }
     rm -f "$BASE/replug.busy"
+    desk_cpu_reset
     # A software re-plug interrupted halfway would leave the DP output off.
     [ -f "$BASE/extdisp.off" ] && { echo "ExtDispOff,0" > $XD 2>/dev/null; rm -f "$BASE/extdisp.off"; log "DP output switched back on after an interrupted re-plug"; }
     while :; do
@@ -1414,6 +1522,7 @@ case "$1" in
     confirm) if [ "$2" = back ]; then lock; confirm_cmd back; unlock; else confirm_cmd; fi ;;
     revert-timer) revert_timer ;;
     thermal-fallback) thermal_cmd "$2" ;;
+    dex-recover) dex_recover_cmd "$2" ;;
     temp-override|desk-mode) desk_cmd "$2" ;;
     temp-limit|desk-limit) desk_limit_cmd "$2" "$3" ;;
     desk-run) desk_run ;;
@@ -1434,5 +1543,5 @@ case "$1" in
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | temp-override on|off | temp-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | dex-recover on|off | temp-override on|off | temp-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
 esac

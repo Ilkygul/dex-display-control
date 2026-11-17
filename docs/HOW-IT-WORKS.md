@@ -149,9 +149,19 @@ same resolution; three cool checks (level 2 or lower, status moderate or lower) 
 
 ### Temperature override
 
-Samsung's limits are written by its thermal software: the GPU's `thermal_pwrlevel` (a root-only
-sysfs file, so a root process) and `scaling_max_freq` of each CPU policy (owned by system), the
-latter about every 1-4 s. The temperature override runs a small loop while a monitor is connected: once a second it
+Samsung's limits sit in four places, all lifted by the override:
+
+- Qualcomm's GPU level, `/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel` (root-only file);
+- Samsung's GPU limit, `/sys/kernel/gpu/gpu_max_clock` (MHz, system-owned): it held the GPU at
+  422 MHz even with the level at 0, and at 160 MHz without the override;
+- each CPU policy's `scaling_max_freq` (system-owned), rewritten about every 1-4 s;
+- Samsung's CPU limit driver, `/sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit`: a
+  "virtual" frequency its table maps to a maximum per core group (1267200 held the fast cores at
+  2.88 GHz); -1 releases it.
+
+The three system-owned files are set to root:root 644 while the override is active, so Samsung's
+software cannot change them; their owner, mode and Samsung's last value are put back when it stops
+(the watcher also repairs that at start-up if the override died). The temperature override runs a small loop while a monitor is connected: once a second it
 reads those values, remembers what Samsung asked for, and sets them back to full speed (level 0,
 `cpuinfo_max_freq`). Every 5 s it reads the thermal HAL's temperatures; at the battery, board or
 skin limit (defaults 41 / 80 / 56 °C, choosable up to 50 / 100 °C / ignored) it writes Samsung's

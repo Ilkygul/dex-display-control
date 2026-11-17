@@ -28,6 +28,12 @@ What it means in practice: when the monitor powers the phone over USB-C (the bat
 charging" or "Charging"), the extra power comes from the monitor, not the battery, and adds a
 little heat. On battery, 60 Hz is the most economical.
 
+## Under load
+
+WebGL Aquarium (5000 fish) on DeX at 5120x2160 110 Hz with DSC: 6-9 W with the temperature
+override on (GPU and CPU at full speed), 4.6-5.2 W with Samsung's limits (GPU down to 160 MHz, fast
+cores to 0.88 GHz, about half the frames). Details in [TESTING.md](TESTING.md).
+
 ## How it was measured
 
 The LG powers the phone over USB-C, so the battery current is about zero and says nothing. For the

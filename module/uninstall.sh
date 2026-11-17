@@ -10,6 +10,14 @@ for f in watch.pid guard.pid desk.pid; do
     [ -n "$p" ] && kill "$p" 2>/dev/null
 done
 for p in $(pidof getevent); do grep -q event4 "/proc/$p/cmdline" 2>/dev/null && kill "$p"; done
+# CPU limit files back to Samsung (the temperature override locks them while it runs).
+for F in /sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq; do
+    [ "$(stat -c %U "$F" 2>/dev/null)" = root ] && { chown system:system "$F"; chmod 664 "$F"; }
+done
+F=/sys/kernel/gpu/gpu_max_clock
+[ -f "$F" ] && [ "$(stat -c %U "$F" 2>/dev/null)" = root ] && { chown system:system "$F"; chmod 644 "$F"; }
+F=/sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit
+[ -f "$F" ] && [ "$(stat -c %U "$F" 2>/dev/null)" = root ] && { chown radio:system "$F"; chmod 664 "$F"; }
 
 # Phone screen refresh rate: the user's own values.
 if [ -f "$B/refresh.saved" ]; then
