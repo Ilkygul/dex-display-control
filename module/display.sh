@@ -1617,6 +1617,10 @@ watch() {
     fi
     echo $$ > "$pidf"
     prev=""; sum=""; tick=0; gone=0; gone_t=0
+    # Wait without starting a process: `sleep` is a separate program on Android (fork + exec every
+    # 3 s was 85 % of the watcher's CPU time). read -t on an idle FIFO waits inside the shell.
+    [ -p "$BASE/tick" ] || { rm -f "$BASE/tick"; mkfifo "$BASE/tick" 2>/dev/null; }
+    if [ -p "$BASE/tick" ] && exec 9<>"$BASE/tick"; then nap() { read -t "$1" -u9 _ 2>/dev/null; }; else nap() { sleep "$1"; }; fi
     sfp=$(pidof surfaceflinger)
     # Started without a monitor (boot, or after a crash): nothing of ours may stay applied.
     connected || { inner_restore; custom_clear; }
@@ -1654,8 +1658,9 @@ watch() {
             unpace
             inner_restore
         elif [ "$st" = connected ]; then
-            # Same cable, new EDID: the monitor switched mode itself (XREAL ultrawide).
-            s2=$(cksum < $CONN/edid 2>/dev/null)
+            # Same cable, new EDID: the monitor switched mode itself (most do it by reconnecting,
+            # which is caught above). Checked every 9 s: cksum is a separate program.
+            s2=$sum; [ $((tick % 3)) = 0 ] && s2=$(cksum < $CONN/edid 2>/dev/null)
             if [ -n "$s2" ] && [ "$s2" != "$sum" ]; then
                 log "EDID changed without unplugging"
                 sum=$s2
@@ -1684,7 +1689,7 @@ watch() {
             sfp=$(pidof surfaceflinger)
             [ "$st" = connected ] && { log "SurfaceFlinger restarted"; pace; }
         fi
-        sleep 3
+        nap 3
     done
 }
 

@@ -94,7 +94,7 @@ Internet on DeX.
 
 | Part | Memory | CPU | When |
 |---|---|---|---|
-| Watcher | 3.7 MB | 0.01 s per 30 s | always (one sysfs read every 3 s) |
+| Watcher | 4.4 MB | under 0.01 s per minute without a monitor (measured: no measurable CPU time in 60 s); was 0.32 s per minute before v2.11.1, 85 % of it starting `sleep` every 3 s | always (one sysfs read every 3 s, waiting in the kernel in between) |
 | Phone-screen guard | ~2 MB | one sysfs read every 0.5 s | only with the switch on and a monitor connected |
 | Status page | - | ~50 ms per refresh, once a second | only while the page is open and visible |
 

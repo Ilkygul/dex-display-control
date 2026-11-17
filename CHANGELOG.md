@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.11.1 (2026-11-17)
+
+- Watcher waits inside the shell (read with a timeout on an idle FIFO) instead of starting `sleep`
+  every 3 s: from 0.32 s to under 0.01 s CPU per minute with no monitor connected. The EDID check
+  while connected runs every 9 s instead of 3.
+
 ## v2.11.0 (2026-11-17)
 
 - Phone screen refresh while connected is now per screen (preferred mode on display 0, 60 or
