@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.7.0 (2026-11-17)
+
+- Experimental desk mode (`desk-mode on|off`): while a monitor is connected, Samsung's skin-based
+  GPU/CPU limits are kept at full speed, with own limits that only go above Samsung's
+  (`desk-limit bat 41|45|50`, `ap 80|90|100`, `skin 56|65|off`); above a limit Samsung's values come
+  back until it has cooled down. Kernel chip protection untouched.
+- Page: desk mode switch, its state, and the limit choices.
+- Uninstall stops desk mode (which hands the limits back).
+
 ## v2.6.0 (2026-11-17)
 
 - Page: phone screen refresh rate and measured fps with its setting; temperatures (skin, chip,

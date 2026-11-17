@@ -90,6 +90,24 @@
     <label class="switch"><input type="checkbox" id="thermSw"><span class="slider"></span></label>
   </div>
   <div class="hint" id="thermState" style="margin-top:6px"></div>
+  <div class="sep"></div>
+  <div class="row">
+    <div>
+      <div>Desk mode: let the phone run hotter (experimental)</div>
+      <div class="hint">For a phone lying untouched next to a monitor. Samsung slows the GPU and CPU from about 43-45 °C estimated skin temperature, a limit meant for a phone in your hand. Desk mode keeps them at full speed while a monitor is connected, until one of the limits below is reached; then Samsung's limits come back until it has cooled down a few degrees. The chip's own protection in the kernel always stays active, whatever you choose here.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="deskSw"><span class="slider"></span></label>
+  </div>
+  <div class="hint" id="deskState" style="margin-top:6px"></div>
+  <div style="margin-top:10px">Battery limit</div>
+  <div class="hint" style="margin:2px 0 6px">The part that ages from heat. Above about 45 °C a lithium battery wears noticeably faster; the charger itself slows and stops charging when the battery gets too hot, whatever you pick.</div>
+  <div class="chips" id="deskBat"></div>
+  <div style="margin-top:10px">Board limit (sensor next to the chip)</div>
+  <div class="hint" style="margin:2px 0 6px">The chip itself may run much hotter (the kernel steps in around 95-105 °C on the die).</div>
+  <div class="chips" id="deskAp"></div>
+  <div style="margin-top:10px">Skin estimate limit</div>
+  <div class="hint" style="margin:2px 0 6px">Only matters if you touch the phone. Samsung starts at about 43-45 °C.</div>
+  <div class="chips" id="deskSkin"></div>
 </div>
 
 <div class="card">
@@ -277,7 +295,32 @@
       : "Keep " + (s.current ? fmtKey(keyOf(s.current)) : "this mode") + "? Going back to " + fmtKey(s.confirm_prev) + " in " + s.confirm_left + " s.";
   }
 
+  function limitChips(box, key, cur, opts, def) {
+    const b = el(box); b.innerHTML = "";
+    for (const [val, label] of opts) {
+      const c = document.createElement("button");
+      c.className = "chip" + ((cur || def) === val ? " active" : "");
+      c.textContent = label; c.disabled = busy;
+      c.onclick = async () => { busy = true; await run("sh " + SCRIPT + " desk-limit " + key + " " + val); busy = false; refresh(); };
+      b.appendChild(c);
+    }
+  }
+
+  function renderDesk(s) {
+    const [lb, la, ls] = (s.desk_limits || "::").split(":");
+    limitChips("deskBat", "bat", lb, [["41", "41 °C (default)"], ["45", "45 °C"], ["50", "50 °C"]], "41");
+    limitChips("deskAp", "ap", la, [["80", "80 °C (default)"], ["90", "90 °C"], ["100", "100 °C"]], "80");
+    limitChips("deskSkin", "skin", ls === "999" ? "off" : ls, [["56", "56 °C (default)"], ["65", "65 °C"], ["off", "Ignore"]], "56");
+    el("deskSw").checked = s.desk_mode === "1"; el("deskSw").disabled = busy;
+    const d = s.desk_state || "";
+    el("deskState").innerHTML = s.desk_mode !== "1" ? "Off."
+      : d.startsWith("on") ? '<span class="okc">Active: GPU and CPU at full speed.</span>'
+      : d.startsWith("back") ? '<span class="warn">Samsung\'s limits are back for now (' + d.slice(5) + "); full speed again once it has cooled down.</span>"
+      : "On; starts when a monitor is connected.";
+  }
+
   function renderTherm(s) {
+    renderDesk(s);
     el("thermSw").checked = s.thermal_fallback === "1"; el("thermSw").disabled = busy;
     el("thermState").innerHTML = s.thermal_lowered
       ? '<span class="warn">Lowered to 60 Hz because the phone is hot; back to ' + fmtKey(s.thermal_lowered) + " when it has cooled down.</span>"
@@ -509,6 +552,14 @@
     busy = false;
     if (out.error) setMsg("expMsg", out.error, "err");
     else setMsg("expMsg", on ? "Removed. The monitor runs with its own data again." : "Done. The new rates are marked in the list above.", "ok");
+    refresh();
+  };
+
+  el("deskSw").onchange = async (e) => {
+    busy = true;
+    await run("sh " + SCRIPT + " desk-mode " + (e.target.checked ? "on" : "off"));
+    busy = false;
+    setMsg("msg", e.target.checked ? "Desk mode on: full speed while a monitor is connected, with Samsung's limits back above the safety temperatures." : "Desk mode off: Samsung's limits apply again.", "ok");
     refresh();
   };
 

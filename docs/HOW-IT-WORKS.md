@@ -147,6 +147,19 @@ or higher (826 MHz) or thermal status critical twice in a row lowers the monitor
 same resolution; three cool checks (level 2 or lower, status moderate or lower) and at least
 3 minutes bring the saved mode back.
 
+### Desk mode
+
+Samsung's limits are written by its thermal software: the GPU's `thermal_pwrlevel` (a root-only
+sysfs file, so a root process) and `scaling_max_freq` of each CPU policy (owned by system), the
+latter about every 1-4 s. Desk mode runs a small loop while a monitor is connected: once a second it
+reads those values, remembers what Samsung asked for, and sets them back to full speed (level 0,
+`cpuinfo_max_freq`). Every 5 s it reads the thermal HAL's temperatures; at the battery, board or
+skin limit (defaults 41 / 80 / 56 °C, choosable up to 50 / 100 °C / ignored) it writes Samsung's
+last values back and stops overriding until the phone is 3-8 °C cooler. The kernel's thermal zones
+and their cooling devices (which protect the chip itself) are not touched, and the charger's own
+battery protection keeps working. With desk mode at full speed, the 60 Hz heat fallback only reacts
+to a held-back GPU, not to the thermal status alone.
+
 ## One action at a time
 
 Commands, the confirmation timer and the watcher's connect handling all reconnect the monitor. A

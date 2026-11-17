@@ -2,9 +2,10 @@
 # DeX Display Control, uninstall: put everything this module changed back.
 B=/data/adb/fold-display
 
-# Stop the watcher and the phone-screen guard.
-rm -f "$B/guard.run"
-for f in watch.pid guard.pid; do
+# Stop the watcher, the phone-screen guard and desk mode (desk mode hands the limits back itself).
+rm -f "$B/guard.run" "$B/desk.run"
+sleep 2
+for f in watch.pid guard.pid desk.pid; do
     p=$(cat "$B/$f" 2>/dev/null)
     [ -n "$p" ] && kill "$p" 2>/dev/null
 done

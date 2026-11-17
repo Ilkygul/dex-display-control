@@ -286,6 +286,9 @@ status() {
     read -r v 2>/dev/null < $pol/scaling_max_freq && echo "cpu_max=$v"
     read -r v 2>/dev/null < $pol/cpuinfo_max_freq && echo "cpu_top=$v"
     echo "thermal_fallback=$(get_set thermal_fallback)"
+    echo "desk_mode=$(get_set desk_mode)"
+    echo "desk_limits=$(get_set desk_bat):$(get_set desk_ap):$(get_set desk_skin)"
+    [ -f "$BASE/desk.state" ] && { read -r v < "$BASE/desk.state"; echo "desk_state=$v"; }
     [ -f "$THL" ] && { read -r _ tp _ < "$THL"; echo "thermal_lowered=$tp"; }
     disp=$(dumpsys SurfaceFlinger --displays 2>/dev/null)
     # One pass over SurfaceFlinger's displays: the phone panel that is on (render rate, id).
@@ -1133,7 +1136,9 @@ thermal_guard() {
     st=$(dumpsys thermalservice 2>/dev/null | sed -n 's/^Thermal Status: \([0-9]*\).*/\1/p' | head -n 1)
     st=${st:-0}
     if [ ! -f "$THL" ]; then
-        if [ "$pl" -ge 6 ] || [ "$st" -ge 4 ]; then hot_n=$((hot_n + 1)); else hot_n=0; fi
+        dk=""; [ -f "$BASE/desk.state" ] && read -r dk _ < "$BASE/desk.state"
+        # In desk mode at full speed the GPU is not held back, so the status alone does not count.
+        if [ "$pl" -ge 6 ] || { [ "$st" -ge 4 ] && [ "$dk" != on ]; }; then hot_n=$((hot_n + 1)); else hot_n=0; fi
         [ "$hot_n" -ge 2 ] || return
         act=$(active_mode); act=${act:+$(to_key "$act")}
         [ -n "$act" ] && [ "${act##*:}" -gt 60 ] || return
@@ -1164,6 +1169,129 @@ thermal_cmd() {
     esac
 }
 
+# ---- Experimental desk mode: run hotter while the phone sits untouched next to a monitor ---------
+# Samsung's thermal service limits the GPU (kgsl thermal_pwrlevel) and the CPU (cpufreq
+# scaling_max_freq, adjusted every 2-4 s) from an estimated skin temperature (~43-45 C), which is
+# meant for a phone in the hand. With desk mode on and a monitor connected, a small loop puts those
+# limits back to full speed once a second, and remembers what Samsung asked for. Limits that protect
+# parts take over again: Samsung's own values come back at once when the battery reaches 41 C, the
+# board near the chip 80 C, the skin estimate 56 C, or any sensor is at "emergency"; desk mode
+# resumes below 38 / 72 / 52 C. The kernel's own chip protection (thermal zones, cooling devices) is
+# separate and never touched. Costs a few sysfs reads per second and one thermal reading per 5 s,
+# only while it runs.
+DESK_BAT=41; DESK_AP=80; DESK_SKIN=56
+DESK_BAT_OK=38; DESK_AP_OK=72; DESK_SKIN_OK=52
+
+desk_temps() {   # -> d_st d_bat d_ap d_skin (whole degrees)
+    d_st=0; d_bat=0; d_ap=0; d_skin=0
+    while IFS='=' read -r k v; do
+        v=${v%%.*}
+        case "$k" in
+            st) d_st=$v ;;
+            BAT) [ "$v" -gt "$d_bat" ] && d_bat=$v ;;
+            AP) [ "$v" -gt "$d_ap" ] && d_ap=$v ;;
+            SKIN) [ "$v" -gt "$d_skin" ] && d_skin=$v ;;
+        esac
+    done <<EOF
+$(dumpsys thermalservice 2>/dev/null | sed -n -e 's/^Thermal Status: \([0-9]*\).*/st=\1/p' \
+    -e '/Current temperatures from HAL/,/Current cooling/s/.*mValue=\([0-9.]*\), mType=[0-9]*, mName=\([A-Z]*\), mStatus=.*/\2=\1/p')
+EOF
+}
+
+desk_run() {
+    pidf=$BASE/desk.pid
+    old=$(cat "$pidf" 2>/dev/null)
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null && grep -q display.sh "/proc/$old/cmdline" 2>/dev/null; then
+        exit 0
+    fi
+    echo $$ > "$pidf"
+    G=/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel
+    POLS=""; for c in /sys/devices/system/cpu/cpufreq/policy*; do [ -w "$c/scaling_max_freq" ] && POLS="$POLS ${c##*policy}"; done
+    # Samsung's wish per node (the value it last set).
+    read -r w_g < $G
+    for i in $POLS; do read -r v < /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; eval "w_$i=$v"; done
+    mode=on; t=0; n_over=0
+    echo "on full speed" > "$BASE/desk.state"
+    log "desk mode on (Samsung's limits overridden; back at battery $DESK_BAT C, board $DESK_AP C, skin $DESK_SKIN C)"
+    while [ -f "$BASE/desk.run" ]; do
+        if [ $((t % 5)) = 0 ]; then
+            # Limits can be tuned in the settings file (desk_bat, desk_ap, desk_skin); the "cool
+            # again" levels stay 3-8 degrees lower.
+            DESK_BAT=$(get_set desk_bat); DESK_BAT=${DESK_BAT:-41}; DESK_BAT_OK=$((DESK_BAT - 3))
+            DESK_AP=$(get_set desk_ap); DESK_AP=${DESK_AP:-80}; DESK_AP_OK=$((DESK_AP - 8))
+            DESK_SKIN=$(get_set desk_skin); DESK_SKIN=${DESK_SKIN:-56}; DESK_SKIN_OK=$((DESK_SKIN - 4))
+            desk_temps
+            if [ "$mode" = on ]; then
+                why=""
+                [ "$d_bat" -ge "$DESK_BAT" ] && why="battery ${d_bat} C"
+                [ "$d_ap" -ge "$DESK_AP" ] && why="board ${d_ap} C"
+                [ "$d_skin" -ge "$DESK_SKIN" ] && why="skin ${d_skin} C"
+                [ "$d_st" -ge 5 ] && why="thermal status $d_st"
+                if [ -n "$why" ]; then
+                    mode=back
+                    echo "$w_g" > $G
+                    for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
+                    echo "back $why" > "$BASE/desk.state"
+                    log "desk mode: $why; Samsung's limits back"
+                fi
+            elif [ "$d_bat" -lt "$DESK_BAT_OK" ] && [ "$d_ap" -lt "$DESK_AP_OK" ] && [ "$d_skin" -lt "$DESK_SKIN_OK" ] && [ "$d_st" -lt 5 ]; then
+                mode=on
+                echo "on full speed" > "$BASE/desk.state"
+                log "desk mode: cool again (battery $d_bat C, board $d_ap C, skin $d_skin C); full speed"
+            fi
+        fi
+        if [ "$mode" = on ]; then
+            read -r g < $G
+            if [ "$g" != 0 ]; then w_g=$g; echo 0 > $G; n_over=$((n_over + 1)); fi
+            for i in $POLS; do
+                P=/sys/devices/system/cpu/cpufreq/policy$i
+                read -r v < $P/scaling_max_freq; read -r top < $P/cpuinfo_max_freq
+                if [ "$v" != "$top" ]; then eval "w_$i=$v"; echo "$top" > $P/scaling_max_freq; n_over=$((n_over + 1)); fi
+            done
+        else
+            read -r w_g < $G
+            for i in $POLS; do read -r v < /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; eval "w_$i=$v"; done
+        fi
+        sleep 1; t=$((t + 1))
+    done
+    # Hand everything back to Samsung.
+    echo "$w_g" > $G
+    for i in $POLS; do eval "echo \$w_$i" > /sys/devices/system/cpu/cpufreq/policy$i/scaling_max_freq; done
+    rm -f "$BASE/desk.state" "$pidf"
+    log "desk mode off ($n_over limits put back to full speed)"
+}
+
+desk_start() {
+    [ "$(get_set desk_mode)" = 1 ] && connected || return 0
+    touch "$BASE/desk.run"
+    spawn sh "$0" desk-run
+}
+
+desk_stop() {
+    [ -f "$BASE/desk.run" ] || [ -f "$BASE/desk.pid" ] || return 0
+    rm -f "$BASE/desk.run"
+    i=0; while [ -f "$BASE/desk.pid" ] && [ "$i" -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
+}
+
+# Limits, all above Samsung's own: battery 41/45/50, board 80/90/100, skin 56/65/off (999).
+desk_limit_cmd() {
+    case "$1:$2" in
+        bat:41|bat:45|bat:50|ap:80|ap:90|ap:100|skin:56|skin:65) put_set "desk_$1" "$2" ;;
+        skin:off) put_set desk_skin 999 ;;
+        *) echo "error=use: desk-limit bat 41|45|50 | ap 80|90|100 | skin 56|65|off"; return 1 ;;
+    esac
+    log "desk mode limit $1 -> $2"
+    echo "ok=1"
+}
+
+desk_cmd() {
+    case "$1" in
+        on) put_set desk_mode 1; log "switch: desk mode ON"; desk_start; echo "ok=1" ;;
+        off) put_set desk_mode 0; log "switch: desk mode OFF"; desk_stop; echo "ok=1" ;;
+        *) echo "error=use: desk-mode on|off" ;;
+    esac
+}
+
 # ---- Watcher ----------------------------------------------------------------------------------
 
 # Everything that follows a connect (also used when the watcher finds the state drifted).
@@ -1187,6 +1315,7 @@ connect_steps() {
     pace
     inner_apply
     guard_start
+    desk_start
 }
 
 # A reconnect the watcher missed (for example while it was busy) leaves things half done: DSC
@@ -1236,6 +1365,7 @@ watch() {
                 connect_steps
             elif [ "$prev" = connected ] && [ ! -f "$BASE/replug.busy" ]; then
                 guard_stop wake
+                desk_stop
                 [ -f "$THL" ] && rm -f "${THL:?}"
                 unpace
                 inner_restore
@@ -1266,6 +1396,7 @@ watch() {
                 thermal_guard
                 inner_apply
                 [ "$(get_set phone_guard)" = 1 ] && [ ! -f "$BASE/guard.pid" ] && guard_start
+                [ "$(get_set desk_mode)" = 1 ] && [ ! -f "$BASE/desk.pid" ] && desk_start
             fi
         fi
         if [ -z "$sfp" ] || [ ! -d "/proc/$sfp" ]; then
@@ -1283,6 +1414,9 @@ case "$1" in
     confirm) if [ "$2" = back ]; then lock; confirm_cmd back; unlock; else confirm_cmd; fi ;;
     revert-timer) revert_timer ;;
     thermal-fallback) thermal_cmd "$2" ;;
+    desk-mode) desk_cmd "$2" ;;
+    desk-limit) desk_limit_cmd "$2" "$3" ;;
+    desk-run) desk_run ;;
     dsc) case "$2" in auto-*) dsc_cmd "$2" ;; *) lock; dsc_cmd "$2"; unlock ;; esac ;;
     reset) lock; reset_mode; unlock ;;
     pace) pace ;;
@@ -1295,10 +1429,10 @@ case "$1" in
     boot)
         # A fresh kernel has no custom EDID and no running guard.
         rm -f "$BASE/op.lock/pid"; rmdir "$BASE/op.lock" 2>/dev/null
-        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/thermal.lowered" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
+        rm -f "$BASE/confirm.pending" "$BASE/dsc.state" "$BASE/modeinfo" "$BASE/thermal.lowered" "$BASE/desk.run" "$BASE/desk.pid" "$BASE/desk.state" "$BASE/custom.active" "$BASE/custom.sum" "$BASE/extra.modes" "$BASE/extra.base" "$BASE/extra.real" "$BASE/extdisp.off" "$BASE/replug.busy" "$BASE/guard.run" "$BASE/guard.pid" "$BASE/guard.armed" "$BASE/guard.keypid" "$DMC"
         last=$(cat "$BASE/last" 2>/dev/null)
         want=$(cat "$PROF/$last" 2>/dev/null)
         valid "$want" && setprop $PROP "$want"
         ;;
-    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | confirm [back] | watch | boot" ;;
+    *) echo "use: display.sh status [full] | set W:H:HZ | reset | phone on|off | phone-guard on|off | inner-hz N|off | extra on|off | dsc on|off|auto-on|auto-off | thermal-fallback on|off | desk-mode on|off | desk-limit bat|ap|skin N | confirm [back] | watch | boot" ;;
 esac
