@@ -58,6 +58,8 @@ Internet on DeX.
 | Colour depth per mode | LG 40U990A | Without DSC: 60 Hz 8-bit, 70-80 Hz 6-bit, 30 Hz 10-bit; with DSC: 10-bit for all (matches the kernel's `bpp` for the modes used) |
 | Reconnect missed by the watcher (while it was busy starting) | LG 40U990A | Found within 30 s by the new consistency check (DSC switches, extra rates, mode override) and applied again |
 | Two actions reconnecting at once (confirmation timer and watcher) | LG 40U990A | Confused each other before the lock; with the lock they run one after the other |
+| Full reboot with the LG connected (root loaded by DFRoot, no soft reboot this time) | LG 40U990A | v2.5.0: DSC switched on by itself, but the extra rates were judged "not accepted" 7 s after the re-plug (Android was still adding the display), the LG came up at its own 120 Hz (black with DSC) and fell back to 100 Hz; the 30 s consistency check restored 110 Hz about 70 s after boot |
+| Same, simulated (DSC switches off, custom EDID cleared, override empty, module start-up) with v2.5.1 | LG 40U990A | 110 Hz with DSC in one re-plug, 8 s after the watcher started; never via 120 Hz; DeX and apps at 110 Hz |
 | Power (whole phone on battery via slate mode, still DeX screen, 50 s average) | LG 40U990A | 60 Hz 2.03 W; 60 Hz DSC 2.15 W; 80 Hz 6-bit 2.37 W; 110 Hz DSC 3.04 W |
 | Live power from the fuel gauge (system current `power_now` x `voltage_sys`, 20 s average) | LG 40U990A | 110 Hz DSC 700 mA x 4.53 V = 3.17 W, 60 Hz DSC 519 mA = 2.35 W, back to 110 Hz 698 mA: follows the change, about 5-10 % above the battery-side result |
 | Status call with the power reading | - | 0.15 s for the whole status call; the reading itself is 4 small sysfs reads, only while the page is visible |
@@ -87,6 +89,7 @@ Internet on DeX.
   maximum, so nothing would be added).
 - XREAL "ultrawide" mode (a monitor that changes its own EDID without unplugging): handled in code
   (EDID checksum watch, per-variant profiles), not yet tried.
+- A second real reboot with v2.5.1 (the fix was verified with a simulated boot).
 - The soft-reboot composer restart as part of the module (it was tested as a stand-alone
   `/data/adb/post-fs-data.d` script with the same code).
 - Any other phone, chip, One UI version, or Magisk instead of KernelSU.

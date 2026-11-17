@@ -428,6 +428,8 @@ on_connect() {
         want=$nb
     fi
     prop=$(getprop $PROP); prop=${prop%:1}
+    # Remembered so the next connect (also after a reboot) asks for it before any re-plug.
+    [ -n "$want" ] && echo "$want" > "$BASE/lastmode.$id"
     if [ -n "$want" ]; then
         [ "$act" = "$want" ] && [ "$pref" = "$want" ] && { [ "$prop" = "$want" ] || setprop $PROP "$want:1"; return; }
         log "$id: cable $act, DeX ${pref:-none}, wanted $want"
@@ -832,8 +834,15 @@ extra_apply() {
     read -r xm < "$BASE/extra.modes"
     log "extra refresh rates for $1 ($xm); software re-plug"
     hw_replug
-    have=" $(offered)"; got=""
-    for m in $xm; do case "$have" in *" ${m%:*} "*) got="$got ${m%:*}" ;; esac; done
+    # Android may still be adding the display (right after boot it took longer than the re-plug
+    # wait): give it up to 20 s before concluding the rates were not taken.
+    i=0; got=""
+    while [ "$i" -lt 10 ]; do
+        have=" $(offered)"
+        for m in $xm; do case "$have" in *" ${m%:*} "*) got="$got ${m%:*}" ;; esac; done
+        [ -n "$got" ] && break
+        sleep 2; i=$((i + 1))
+    done
     [ -n "$got" ] && { log "offered now:$got"; return 0; }
     log "none of the extra rates was accepted; back to the monitor's own EDID"
     custom_clear
@@ -1080,6 +1089,12 @@ confirm_cmd() {
 # Everything that follows a connect (also used when the watcher finds the state drifted).
 connect_steps() {
     lock
+    # Ask the composer for this monitor's last mode right away, so the re-plugs below (DSC, extra
+    # rates) do not come up in the monitor's preferred mode first (the LG's own 120 Hz is too fast
+    # for its decoder with DSC: black). Falls back to the first mode if not offered.
+    id=$(edid_id); lk=""
+    [ -n "$id" ] && read -r lk 2>/dev/null < "$BASE/lastmode.$id"
+    valid "$lk:1" && [ "$(getprop $PROP)" != "$lk:1" ] && setprop $PROP "$lk:1"
     custom_on_connect || wait_sf >/dev/null
     if dsc_auto; then
         # The switches only count at a connect: the extra rates' re-plug does it, or one now.

@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.5.1 (2026-11-17)
+
+- Fix (found in a reboot test): right after boot the extra rates were checked before Android had
+  added the display again, judged "not accepted" and removed; the check now waits up to 20 s.
+- The last mode per monitor is remembered and requested before any re-plug at connect, so a monitor
+  comes back in its mode directly (the LG no longer passes through its own 120 Hz, which is too fast
+  for its decoder with DSC).
+
 ## v2.5.0 (2026-11-17)
 
 - Live whole-phone power on the status page (fuel gauge system current x system voltage), with a
